@@ -1,0 +1,22 @@
+version: '3.8'
+services:
+  ai_system:
+    build:.
+    container_name: local_ai_mas
+    ports:
+      - "8000:8000" # Map host port to container port for the LLM server
+    volumes:
+      -.:/app # Mount the project directory for live code changes
+      - ~/.cache/huggingface:/root/.cache/huggingface # Mount Hugging Face cache
+      -./models:/app/models # Mount a local directory for storing LLM models
+      -./db:/app/db # Mount a local directory for the persistent vector store
+      -./logs:/app/logs # Mount a local directory for log files
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    stdin_open: true # Keep stdin open for interactive sessions
+    tty: true        # Allocate a pseudo-TTY
