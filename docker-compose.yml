@@ -1,12 +1,12 @@
 version: '3.8'
 services:
   brainiac_server:
-    build:.
+    build: .
     container_name: brainiac_llama_cpp_server
     ports:
       - "8080:8080"
     volumes:
-      -./models:/models
+      - ./models:/models
     deploy:
       resources:
         reservations:
