@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-brAIniac is a local AI-powered assistant that leverages large language models (LLMs) to provide intelligent responses and assistance. The project uses llama.cpp with CUDA acceleration to run quantized models efficiently on local hardware, providing privacy and control over your AI interactions.
+**brAIniac** is a local AI-powered assistant that leverages large language models (LLMs) to provide intelligent responses and assistance. The project uses llama.cpp with CUDA acceleration to run quantized models efficiently on local hardware, providing privacy and control over your AI interactions.
 
 ## Features
 
