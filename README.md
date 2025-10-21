@@ -37,11 +37,11 @@
    - During installation, select "Desktop development with C++"
    - This is required for installing `llama-cpp-python` and other packages with C++ dependencies
 
-5. **Python 3.11+**
+4. **Python 3.11+**
    - Download from: [https://www.python.org/downloads/](https://www.python.org/downloads/)
    - Ensure Python is added to your system PATH
 
-6. **Poetry** (Python dependency management)
+5. **Poetry** (Python dependency management)
 
    ```bash
    pip install poetry
@@ -57,8 +57,9 @@
    ```
 
 2. **Download a model**
+
    - Create a `models` directory in the project root
-   - Download a GGUF format model (e.g., from https://huggingface.co)
+   - Download a GGUF format model (e.g., from [Hugging Face](https://huggingface.co))
    - Place the model file in the `models` directory
    - Example: `luna-ai-llama2-uncensored.Q4_K_M.gguf`
 
@@ -165,7 +166,7 @@ If the model runs out of memory:
 
 ## Project Structure
 
-```text
+```plaintext
 brAIniac/
 ├── models/                 # Model files (GGUF format)
 ├── .github/
