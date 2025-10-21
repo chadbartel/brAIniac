@@ -41,9 +41,17 @@ RUN apt-get update && apt-get install -y \
 # Build llama.cpp with CUDA support
 WORKDIR /app/llama.cpp
 
+# Make the CUDA "stubs" visible to the linker at build time,
+# provide the expected soname, and tell CMake to use rpath-link.
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH}
+RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so \
+    /usr/local/cuda/lib64/stubs/libcuda.so.1
+
 RUN cmake -B build \
     -DGGML_CUDA=ON \
-    -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs
+    -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs \
+    -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath-link,/usr/local/cuda/lib64/stubs" \
+    -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath-link,/usr/local/cuda/lib64/stubs"
 
 RUN cmake --build build --config Release
 
