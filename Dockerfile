@@ -40,8 +40,15 @@ RUN apt-get update && apt-get install -y \
 
 # Build llama.cpp with CUDA support
 WORKDIR /app/llama.cpp
+
+# Set library path to include CUDA stubs for build time
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH}
+
 RUN cmake -B build -DGGML_CUDA=ON
 RUN cmake --build build --config Release
+
+# Reset library path for runtime
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
 
 # Set the final working directory to where the server executable is
 WORKDIR /app/llama.cpp/build/bin
