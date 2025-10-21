@@ -6,6 +6,10 @@ services:
       - "8080:8080"
     volumes:
       - ./models:/models
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     deploy:
       resources:
         reservations:
@@ -14,9 +18,9 @@ services:
               count: 1
               capabilities: [gpu]
     command: >
-     ./server
+      ./llama-server
       --model /models/luna-ai-llama2-uncensored.Q4_K_M.gguf
       --host 0.0.0.0
       --port 8080
-      --n_gpu_layers -1
-      --n_ctx 4096
+      --n-gpu-layers -1
+      --ctx-size 4096
