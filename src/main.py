@@ -18,7 +18,9 @@ logging.basicConfig(
 
 
 def wait_for_model_ready(
-    base_url: str, max_retries: int = 30, retry_delay: int = 2
+    base_url: str,
+    max_retries: int = 30,
+    retry_delay: int = 2,
 ) -> bool:
     """
     Poll the server until the model is loaded and ready.
@@ -32,7 +34,8 @@ def wait_for_model_ready(
         True if model is ready, False if max retries exceeded
     """
     logging.info(
-        "Polling server at %s to confirm model is loaded...", base_url
+        "Polling server at %s to confirm model is loaded...",
+        base_url,
     )
 
     for attempt in range(1, max_retries + 1):
@@ -93,14 +96,10 @@ config_list = [
     }
 ]
 
-# LLM configuration with stop sequences to prevent template tokens
+# LLM configuration - keep it simple, only standard parameters
 llm_config = {
     "config_list": config_list,
     "temperature": 0.7,
-    "max_tokens": 500,
-    "extra_body": {
-        "stop": ["<|im_end|>", "<|im_start|>"],
-    },
 }
 
 # User proxy with better termination logic
@@ -212,7 +211,11 @@ def dump_conversation_state(log_dir: str = "logs") -> None:
 if __name__ == "__main__":
     base_url = config_list[0]["base_url"]
 
-    if not wait_for_model_ready(base_url, max_retries=30, retry_delay=2):
+    if not wait_for_model_ready(
+        base_url,
+        max_retries=30,
+        retry_delay=2,
+    ):
         logging.error("Model server not ready. Exiting.")
         exit(1)
 
