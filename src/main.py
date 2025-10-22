@@ -79,9 +79,7 @@ def wait_for_model_ready(
             )
             time.sleep(retry_delay)
 
-    logging.error(
-        "✗ Failed to connect after %d attempts", max_retries
-    )
+    logging.error("✗ Failed to connect after %d attempts", max_retries)
     return False
 
 
@@ -114,10 +112,7 @@ user_proxy = autogen.UserProxyAgent(
     human_input_mode="NEVER",
     max_consecutive_auto_reply=2,
     is_termination_msg=lambda x: (
-        x.get("content", "")
-        .rstrip()
-        .upper()
-        .endswith("TERMINATE")
+        x.get("content", "").rstrip().upper().endswith("TERMINATE")
     ),
 )
 
@@ -184,9 +179,7 @@ def persist_conversation_turn(
     with open(filename, "a", encoding="utf-8") as f:
         f.write(json.dumps(turn_data) + "\n")
 
-    logging.info(
-        "📝 Turn %d: %s", turn_number, agent_name
-    )
+    logging.info("📝 Turn %d: %s", turn_number, agent_name)
 
 
 def dump_conversation_state(log_dir: str = "logs") -> None:
@@ -236,10 +229,8 @@ if __name__ == "__main__":
 
     user_proxy.initiate_chat = wrapped_initiate_chat
 
-    logging.info(
-        "Starting conversation: Research photosynthesis\n"
-    )
-    
+    logging.info("Starting conversation: Research photosynthesis\n")
+
     user_proxy.initiate_chat(
         orchestrator,
         message=(
