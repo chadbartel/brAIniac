@@ -24,5 +24,6 @@ services:
       --port 8080
       --n-gpu-layers -1
       --ctx-size 4096
+      --jinja
       --reverse-prompt "<|im_end|>"
       --reverse-prompt "<|im_start|>"
