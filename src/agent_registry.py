@@ -183,6 +183,40 @@ def create_dynamic_selector(
 
         logger.debug("Selecting next speaker after '%s'", last_speaker.name)
 
+        # 0. PRIORITY: Check if last message contains a tool call
+        # Tool calls should ALWAYS go to User_Proxy for execution
+        if last_message.get("tool_calls") or "suggested tool call" in content:
+            # Find User_Proxy agent
+            for agent in groupchat.agents:
+                if "proxy" in agent.name.lower():
+                    logger.info(
+                        "Routing tool call from '%s' to '%s' for execution",
+                        last_speaker.name,
+                        agent.name,
+                    )
+                    return agent
+
+        # 0b. If User_Proxy just executed a tool, return to the agent that called it
+        if "proxy" in last_speaker.name.lower() and len(messages) >= 2:
+            # Look for the agent that made the tool call
+            for i in range(len(messages) - 2, -1, -1):
+                prev_msg = messages[i]
+                prev_content = prev_msg.get("content", "").lower()
+                if "suggested tool call" in prev_content or prev_msg.get(
+                    "tool_calls"
+                ):
+                    # Find the agent that made this call
+                    sender_name = prev_msg.get("name", "")
+                    for agent in groupchat.agents:
+                        if agent.name == sender_name:
+                            logger.info(
+                                "Returning tool results from '%s' to '%s'",
+                                last_speaker.name,
+                                agent.name,
+                            )
+                            return agent
+                    break
+
         # 1. Check for explicit routing in message
         if "next:" in content:
             # Extract agent name after "next:"

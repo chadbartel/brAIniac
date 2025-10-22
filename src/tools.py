@@ -18,6 +18,11 @@ def search_web(query: str, num_results: int = 5) -> str:
     """
     Search the web using DuckDuckGo API (free, no API key needed).
 
+    Note: DuckDuckGo's free API is limited. For production use:
+    - Google Custom Search API
+    - Bing Web Search API
+    - SerpAPI
+
     Args:
         query: The search query
         num_results: Number of results to return
@@ -25,6 +30,8 @@ def search_web(query: str, num_results: int = 5) -> str:
     Returns:
         Formatted search results as a string
     """
+    logger.info("Web search called for: %s", query)
+
     try:
         # DuckDuckGo Instant Answer API (free, no auth)
         url = "https://api.duckduckgo.com/"
@@ -35,7 +42,13 @@ def search_web(query: str, num_results: int = 5) -> str:
             "skip_disambig": 1,
         }
 
-        response = requests.get(url, params=params, timeout=10)
+        headers = {
+            "User-Agent": "brAIniac/1.0 (Educational Research Assistant)"
+        }
+
+        response = requests.get(
+            url, params=params, headers=headers, timeout=10
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -53,17 +66,29 @@ def search_web(query: str, num_results: int = 5) -> str:
             for i, topic in enumerate(data["RelatedTopics"][:num_results], 1):
                 if isinstance(topic, dict) and "Text" in topic:
                     text = topic.get("Text", "")
-                    url = topic.get("FirstURL", "")
-                    results.append(f"{i}. {text}\n   Source: {url}")
+                    topic_url = topic.get("FirstURL", "")
+                    results.append(f"{i}. {text}\n   Source: {topic_url}")
 
-        if not results:
-            return f"No results found for query: {query}"
+        if results:
+            return f"Search results for '{query}':\n\n" + "\n\n".join(results)
 
-        return f"Search results for '{query}':\n\n" + "\n\n".join(results)
+        # If no results from DuckDuckGo, return a helpful message
+        return (
+            f"⚠️ No results from DuckDuckGo for: {query}\n\n"
+            f"DuckDuckGo's free API has limited coverage. "
+            f"For production use, integrate:\n"
+            f"- Google Custom Search API (100 free queries/day)\n"
+            f"- Bing Web Search API (1000 free queries/month)\n"
+            f"- SerpAPI (paid, comprehensive)\n\n"
+            f"Try using search_wikipedia() for factual/historical information."
+        )
 
     except Exception as e:
         logger.error("Web search failed: %s", e)
-        return f"Error performing web search: {str(e)}"
+        return (
+            f"⚠️ Web search error: {str(e)}\n\n"
+            f"Try using search_wikipedia() for factual information instead."
+        )
 
 
 def search_news(query: str, days_back: int = 7) -> str:
@@ -121,33 +146,31 @@ def search_wikipedia(query: str) -> str:
         params = {
             "action": "opensearch",
             "format": "json",
-            "prop": "extracts",
-            "exintro": True,
-            "explaintext": True,
             "search": query,
+            "limit": 1,
         }
 
-        response = requests.get(url, params=params, timeout=10)
+        headers = {
+            "User-Agent": "brAIniac/1.0 (Educational Research Assistant)"
+        }
+
+        response = requests.get(
+            url, params=params, headers=headers, timeout=10
+        )
         response.raise_for_status()
         data = response.json()
 
-        pages = data.get("query", {}).get("pages", {})
-        if not pages:
+        if len(data) < 4 or not data[1]:
             return f"No Wikipedia page found for: {query}"
 
-        # Get the first page
-        page = next(iter(pages.values()))
-
-        if "missing" in page:
-            return f"No Wikipedia page found for: {query}"
-
-        title = page.get("title", query)
-        extract = page.get("extract", "No summary available.")
+        title = data[1][0] if data[1] else query
+        description = data[2][0] if data[2] else "No description available."
+        page_url = data[3][0] if data[3] else ""
 
         return (
             f"**Wikipedia: {title}**\n\n"
-            f"{extract}\n\n"
-            f"Source: https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
+            f"{description}\n\n"
+            f"Source: {page_url}"
         )
 
     except Exception as e:
