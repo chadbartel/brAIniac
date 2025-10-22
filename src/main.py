@@ -1,4 +1,5 @@
 # Standard Library
+import sys
 import json
 import time
 import logging
@@ -6,12 +7,26 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict
 
+# Force UTF-8 encoding for Windows console
+if sys.platform == "win32":
+    # Standard Library
+    import io
+
+    sys.stdout = io.TextIOWrapper(
+        sys.stdout.buffer, encoding="utf-8", errors="replace"
+    )
+    sys.stderr = io.TextIOWrapper(
+        sys.stderr.buffer, encoding="utf-8", errors="replace"
+    )
+
 # Third Party
 import autogen
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # My Modules
-# Local
 from agent_registry import AgentRegistry, create_dynamic_selector
 from tools import TOOL_DEFINITIONS, TOOL_FUNCTIONS
 
@@ -115,13 +130,16 @@ registry = AgentRegistry(llm_config)
 user_proxy = autogen.UserProxyAgent(
     name="User_Proxy",
     system_message=(
-        "You are the human user. You can execute tool calls. "
-        "After receiving a complete answer, reply with: TERMINATE"
+        "You are the human user. You execute tool calls and return results. "
+        "After executing a tool, always return the results without adding commentary. "
+        "After receiving a complete final answer, reply with: TERMINATE"
     ),
     code_execution_config=False,
     human_input_mode="NEVER",
-    max_consecutive_auto_reply=10,
-    is_termination_msg=lambda x: ("terminate" in x.get("content", "").lower()),
+    max_consecutive_auto_reply=15,
+    is_termination_msg=lambda x: (
+        x.get("content", "") and ("TERMINATE" in x.get("content", "").upper())
+    ),
     function_map=TOOL_FUNCTIONS,
 )
 
@@ -143,7 +161,7 @@ researcher = registry.register_agent(
         "Always cite your sources and use the tools to get real data."
     ),
     capabilities=["research", "data_gathering", "analysis"],
-    can_route_to=["Policital_Expert"],
+    can_route_to=["User_Proxy", "Political_Expert"],
     tools=TOOL_DEFINITIONS,
 )
 
@@ -165,14 +183,14 @@ science_expert = registry.register_agent(
 # Create dynamic speaker selector with default flow
 speaker_selector = create_dynamic_selector(
     registry=registry,
-    default_flow=["User_Proxy", "Researcher", "Policital_Expert"],
+    default_flow=["User_Proxy", "Researcher", "Political_Expert"],
 )
 
 # Create the group chat with dynamic speaker selection
 groupchat = autogen.GroupChat(
-    agents=[user_proxy, researcher, science_expert],
+    agents=[user_proxy, researcher, political_expert],
     messages=[],
-    max_round=10,
+    max_round=25,
     speaker_selection_method=speaker_selector,
     allow_repeat_speaker=False,
 )
