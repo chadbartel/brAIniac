@@ -10,6 +10,9 @@ from typing import Any, Dict
 import autogen
 import requests
 
+# Local
+from agent_registry import AgentRegistry, create_dynamic_selector
+
 # Configure logging at INFO level
 logging.basicConfig(
     level=logging.INFO,
@@ -45,10 +48,11 @@ def wait_for_model_ready(
                 data = resp.json()
                 models = data.get("data", [])
                 if models:
+                    model_ids = [m.get("id") for m in models]
                     logging.info(
                         "✓ Model server ready! Found %d model(s): %s",
                         len(models),
-                        [m.get("id") for m in models],
+                        model_ids,
                     )
                     return True
 
@@ -66,7 +70,7 @@ def wait_for_model_ready(
             )
             if resp.status_code == 200:
                 logging.info(
-                    "✓ Model server ready! Completion endpoint " "responding."
+                    "✓ Model server ready! Completion endpoint responding."
                 )
                 return True
 
@@ -96,51 +100,72 @@ config_list = [
     }
 ]
 
-# LLM configuration - keep it simple, only standard parameters
+# LLM configuration
 llm_config = {
     "config_list": config_list,
     "temperature": 0.7,
 }
 
-# User proxy with better termination logic
+# Initialize the agent registry
+registry = AgentRegistry(llm_config)
+
+# Register the User Proxy (not managed by registry, special agent)
 user_proxy = autogen.UserProxyAgent(
     name="User_Proxy",
     system_message=(
-        "You are a human user. You give tasks to the team and "
-        "respond when needed. Reply TERMINATE when satisfied."
+        "You are the human user. After receiving a complete answer, "
+        "reply with: TERMINATE"
     ),
-    code_execution_config={"work_dir": "coding", "use_docker": False},
+    code_execution_config=False,
     human_input_mode="NEVER",
-    max_consecutive_auto_reply=2,
+    max_consecutive_auto_reply=1,
     is_termination_msg=lambda x: (
-        x.get("content", "").rstrip().upper().endswith("TERMINATE")
+        "terminate" in x.get("content", "").lower()
     ),
 )
 
-researcher = autogen.AssistantAgent(
+# Register the Researcher agent
+researcher = registry.register_agent(
     name="Researcher",
     system_message=(
-        "You are a research assistant. Find information on topics "
-        "and report back concisely. When done, say 'Research "
-        "complete.'"
+        "You are a research assistant. When asked to research a topic:\n"
+        "1. Gather comprehensive information from reliable sources\n"
+        "2. Organize the information clearly\n"
+        "3. End your message with: 'NEXT: Science_Expert'\n"
+        "This signals that the Science_Expert should explain next."
     ),
-    llm_config=llm_config,
+    capabilities=["research", "data_gathering", "analysis"],
+    can_route_to=["Science_Expert"],
 )
 
-science_expert = autogen.AssistantAgent(
+# Register the Science Expert agent
+science_expert = registry.register_agent(
     name="Science_Expert",
     system_message=(
-        "You are a science expert. Explain topics in simple terms. "
-        "When you have answered the question, say 'TERMINATE'."
+        "You are a science educator. When the Researcher provides "
+        "technical information:\n"
+        "1. Explain the concepts in simple, easy-to-understand terms\n"
+        "2. Use analogies and examples when helpful\n"
+        "3. End your explanation with: TERMINATE\n"
+        "This completes the conversation."
     ),
-    llm_config=llm_config,
+    capabilities=["explanation", "simplification", "teaching"],
+    can_route_to=["User_Proxy"],
 )
 
+# Create dynamic speaker selector with default flow
+speaker_selector = create_dynamic_selector(
+    registry=registry,
+    default_flow=["User_Proxy", "Researcher", "Science_Expert"],
+)
+
+# Create the group chat with dynamic speaker selection
 groupchat = autogen.GroupChat(
     agents=[user_proxy, researcher, science_expert],
     messages=[],
-    max_round=8,
-    speaker_selection_method="round_robin",
+    max_round=10,
+    speaker_selection_method=speaker_selector,
+    allow_repeat_speaker=False,
 )
 
 orchestrator = autogen.GroupChatManager(
