@@ -36,6 +36,23 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
+# Define prompts
+USER_PROXY_PROMPT = """
+A human admin who will give the primary task. Interact with the other agents to get the task done.
+The user's task must be completed.
+"""
+
+RESEARCHER_PROMPT = """
+You are a master researcher. Your role is to take a user's request, break it down into searchable questions, and use the tools at your disposal to find the most accurate and up-to-date information.
+
+**Your Process:**
+1.  **Deconstruct:** Break down the user's complex request into a series of smaller, specific questions that can be answered with web searches.
+2.  **Search:** Use the `search_web` tool for each question to find relevant articles and sources.
+3.  **Scrape & Analyze:** For the most promising URLs from your search, use the `scrape_url` tool to read the full content.
+4.  **Synthesize:** After gathering all the information, compile a comprehensive report that directly answers the user's original request. Address each point of the request clearly.
+5.  **Final Output:** Present your final, synthesized report to the group. Do not ask for the next step. Simply provide the completed research.
+"""
+
 
 def wait_for_model_ready(
     base_url: str,
@@ -129,11 +146,7 @@ registry = AgentRegistry(llm_config)
 # Register the User Proxy with tool execution capability
 user_proxy = autogen.UserProxyAgent(
     name="User_Proxy",
-    system_message=(
-        "You are the human user. You execute tool calls and return results. "
-        "After executing a tool, always return the results without adding commentary. "
-        "After receiving a complete final answer, reply with: TERMINATE"
-    ),
+    system_message=USER_PROXY_PROMPT,
     code_execution_config=False,
     human_input_mode="NEVER",
     max_consecutive_auto_reply=15,
@@ -146,20 +159,7 @@ user_proxy = autogen.UserProxyAgent(
 # Register the Researcher agent with web search tools
 researcher = registry.register_agent(
     name="Researcher",
-    system_message=(
-        "You are a research assistant with access to web search tools.\n\n"
-        "IMPORTANT: When asked to research a topic:\n"
-        "1. ALWAYS use search_web() to find current information\n"
-        "2. Use get_current_date() to know what 'today' is\n"
-        "3. Search for the specific topic requested\n"
-        "4. Organize your findings clearly\n"
-        "5. End with: 'NEXT: Policital_Expert'\n\n"
-        "Available tools:\n"
-        "- search_web(query): Search for current information\n"
-        "- search_wikipedia(query): Get factual information\n"
-        "- get_current_date(): Know the current date\n\n"
-        "Always cite your sources and use the tools to get real data."
-    ),
+    system_message=RESEARCHER_PROMPT,
     capabilities=["research", "data_gathering", "analysis"],
     can_route_to=["User_Proxy", "Political_Expert"],
     tools=TOOL_DEFINITIONS,
@@ -190,7 +190,7 @@ speaker_selector = create_dynamic_selector(
 groupchat = autogen.GroupChat(
     agents=[user_proxy, researcher, science_expert],
     messages=[],
-    max_round=25,
+    max_round=15,
     speaker_selection_method=speaker_selector,
     allow_repeat_speaker=False,
 )
