@@ -63,7 +63,7 @@ def wait_for_model_ready(
             )
             if resp.status_code == 200:
                 logging.info(
-                    "✓ Model server ready! Completion endpoint responding."
+                    "✓ Model server ready! Completion endpoint " "responding."
                 )
                 return True
 
@@ -83,7 +83,7 @@ def wait_for_model_ready(
     return False
 
 
-# Configuration for the local LLM with stop tokens
+# Configuration for the local LLM
 config_list = [
     {
         "model": "local-model",
@@ -98,7 +98,9 @@ llm_config = {
     "config_list": config_list,
     "temperature": 0.7,
     "max_tokens": 500,
-    "stop": ["<|im_end|>", "<|im_start|>"],
+    "extra_body": {
+        "stop": ["<|im_end|>", "<|im_start|>"],
+    },
 }
 
 # User proxy with better termination logic
