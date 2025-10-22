@@ -10,6 +10,7 @@ from typing import Any, Dict
 import autogen
 import requests
 
+# My Modules
 # Local
 from agent_registry import AgentRegistry, create_dynamic_selector
 
@@ -119,9 +120,7 @@ user_proxy = autogen.UserProxyAgent(
     code_execution_config=False,
     human_input_mode="NEVER",
     max_consecutive_auto_reply=1,
-    is_termination_msg=lambda x: (
-        "terminate" in x.get("content", "").lower()
-    ),
+    is_termination_msg=lambda x: ("terminate" in x.get("content", "").lower()),
 )
 
 # Register the Researcher agent

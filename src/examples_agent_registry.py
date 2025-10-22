@@ -8,8 +8,13 @@ This script shows how to:
 4. Query the registry for agent information
 """
 
+# Standard Library
 import logging
+
+# Third Party
 import autogen
+
+# My Modules
 from agent_registry import AgentRegistry, create_dynamic_selector
 
 # Configure logging

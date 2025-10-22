@@ -2,6 +2,7 @@
 Quick test to verify agent_registry module loads and works correctly.
 """
 
+# Standard Library
 import sys
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from pathlib import Path
 src_path = Path(__file__).parent
 sys.path.insert(0, str(src_path))
 
+# My Modules
 from agent_registry import AgentRegistry, create_dynamic_selector
 
 print("✓ Successfully imported agent_registry module")

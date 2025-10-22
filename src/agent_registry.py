@@ -5,10 +5,12 @@ This module provides a registry pattern for managing agents dynamically,
 including capability-based routing and on-demand agent creation.
 """
 
-from typing import Dict, List, Optional, Callable
+# Standard Library
 import logging
-import autogen
+from typing import Dict, List, Optional, Callable
 
+# Third Party
+import autogen
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +51,7 @@ class AgentRegistry:
             The created agent
         """
         if name in self._agents:
-            logger.warning(
-                "Agent '%s' already registered, overwriting", name
-            )
+            logger.warning("Agent '%s' already registered, overwriting", name)
 
         agent = autogen.AssistantAgent(
             name=name,
@@ -174,35 +174,23 @@ def create_dynamic_selector(
         last_message = messages[-1] if messages else {}
         content = last_message.get("content", "").lower()
 
-        logger.debug(
-            "Selecting next speaker after '%s'", last_speaker.name
-        )
+        logger.debug("Selecting next speaker after '%s'", last_speaker.name)
 
         # 1. Check for explicit routing in message
         if "next:" in content:
             # Extract agent name after "next:"
             try:
-                agent_name = (
-                    content.split("next:")[1].split()[0].strip()
-                )
+                agent_name = content.split("next:")[1].split()[0].strip()
                 agent = registry.get_agent(agent_name)
                 if agent:
-                    logger.info(
-                        "Explicit routing to '%s'", agent_name
-                    )
+                    logger.info("Explicit routing to '%s'", agent_name)
                     return agent
-                logger.warning(
-                    "Agent '%s' not found in registry", agent_name
-                )
+                logger.warning("Agent '%s' not found in registry", agent_name)
             except (IndexError, AttributeError) as exc:
-                logger.debug(
-                    "Failed to parse explicit routing: %s", exc
-                )
+                logger.debug("Failed to parse explicit routing: %s", exc)
 
         # 2. Check routing rules from registry
-        routing_options = registry.get_routing_options(
-            last_speaker.name
-        )
+        routing_options = registry.get_routing_options(last_speaker.name)
         if routing_options:
             next_agent = routing_options[0]
             logger.info(
@@ -219,9 +207,7 @@ def create_dynamic_selector(
         ):
             researchers = registry.find_agents_by_capability("research")
             if researchers and researchers[0] != last_speaker:
-                logger.info(
-                    "Routing to researcher based on content keywords"
-                )
+                logger.info("Routing to researcher based on content keywords")
                 return researchers[0]
 
         if any(
@@ -233,13 +219,9 @@ def create_dynamic_selector(
                 "clarify",
             ]
         ):
-            explainers = registry.find_agents_by_capability(
-                "explanation"
-            )
+            explainers = registry.find_agents_by_capability("explanation")
             if explainers and explainers[0] != last_speaker:
-                logger.info(
-                    "Routing to explainer based on content keywords"
-                )
+                logger.info("Routing to explainer based on content keywords")
                 return explainers[0]
 
         # 4. Follow default flow if provided
