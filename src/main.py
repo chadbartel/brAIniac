@@ -10,9 +10,9 @@ from typing import Any, Dict
 import autogen
 import requests
 
-# Configure logging for more visibility (enable debug)
+# Configure logging at INFO level
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
@@ -21,10 +21,10 @@ def wait_for_model_ready(
     base_url: str, max_retries: int = 30, retry_delay: int = 2
 ) -> bool:
     """
-    Poll the server until the model is loaded and ready to serve requests.
+    Poll the server until the model is loaded and ready.
 
     Args:
-        base_url: The base URL of the llama server (e.g., http://localhost:8080/v1)
+        base_url: The base URL of the llama server
         max_retries: Maximum number of polling attempts
         retry_delay: Seconds to wait between retries
 
@@ -37,7 +37,6 @@ def wait_for_model_ready(
 
     for attempt in range(1, max_retries + 1):
         try:
-            # Try to get models list
             resp = requests.get(f"{base_url}/models", timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
@@ -50,12 +49,9 @@ def wait_for_model_ready(
                     )
                     return True
 
-            # Try a simple completion as fallback check
             payload: Dict[str, Any] = {
                 "model": "local-model",
-                "messages": [
-                    {"role": "user", "content": "ping"},
-                ],
+                "messages": [{"role": "user", "content": "ping"}],
                 "temperature": 0.0,
                 "max_tokens": 5,
             }
@@ -71,14 +67,12 @@ def wait_for_model_ready(
                 )
                 return True
 
-        except requests.exceptions.RequestException as exc:
-            logging.debug(
-                "Attempt %d/%d failed: %s", attempt, max_retries, exc
-            )
+        except requests.exceptions.RequestException:
+            pass
 
         if attempt < max_retries:
             logging.info(
-                "Server not ready yet, retrying in %d seconds... (%d/%d)",
+                "Server not ready, retrying in %d seconds... (%d/%d)",
                 retry_delay,
                 attempt,
                 max_retries,
@@ -86,99 +80,71 @@ def wait_for_model_ready(
             time.sleep(retry_delay)
 
     logging.error(
-        "✗ Failed to connect to model server after %d attempts", max_retries
+        "✗ Failed to connect after %d attempts", max_retries
     )
     return False
 
 
-def check_local_server(base_url: str) -> None:
-    """Probe the local Llama server for models and a quick ping."""
-    try:
-        resp = requests.get(f"{base_url}/models", timeout=5)
-        logging.debug(
-            "GET /models status=%s body=%s", resp.status_code, resp.text
-        )
-    except Exception as exc:  # pragma: no cover - diagnostic helper
-        logging.warning("Failed to GET /models: %s", exc)
-
-    try:
-        payload: Dict[str, Any] = {
-            "model": "local-model",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "Ping from main.py - are you alive?",
-                }
-            ],
-            "temperature": 0.0,
-            "max_tokens": 16,
-        }
-        resp = requests.post(
-            f"{base_url}/chat/completions",
-            headers={"Content-Type": "application/json"},
-            data=json.dumps(payload),
-            timeout=10,
-        )
-        logging.debug(
-            "POST /chat/completions status=%s body=%s",
-            resp.status_code,
-            resp.text,
-        )
-    except Exception as exc:  # pragma: no cover - diagnostic helper
-        logging.warning("Failed to POST /chat/completions: %s", exc)
-
-
-# Configuration for the local LLM
-# Point this to your llama.cpp server's address and port
+# Configuration for the local LLM with stop tokens
 config_list = [
     {
         "model": "local-model",
         "base_url": "http://localhost:8080/v1",
         "api_key": "not-needed",
-        # add price metadata to silence the "model not found" warning in autogen client
         "price": [0.0, 0.0],
     }
 ]
 
-# General LLM configuration for the agents
+# LLM configuration with stop sequences to prevent template tokens
 llm_config = {
     "config_list": config_list,
     "temperature": 0.7,
+    "max_tokens": 500,
+    "stop": ["<|im_end|>", "<|im_start|>"],
 }
 
-# 1. THE USER PROXY AGENT
-# This agent acts as the user's proxy, executing code and gathering user input.
+# User proxy with better termination logic
 user_proxy = autogen.UserProxyAgent(
     name="User_Proxy",
-    system_message="A human admin who will give the primary task. Interact with the other agents to get the task done.",
-    code_execution_config={
-        "work_dir": "coding",
-        "use_docker": False,  # Set to True if you want to execute code in a Docker container
-    },
-    human_input_mode="TERMINATE",  # Pauses for human input before the conversation ends
-    is_termination_msg=lambda x: x.get("content", "")
-    .rstrip()
-    .endswith("TERMINATE"),
+    system_message=(
+        "You are a human user. You give tasks to the team and "
+        "respond when needed. Reply TERMINATE when satisfied."
+    ),
+    code_execution_config={"work_dir": "coding", "use_docker": False},
+    human_input_mode="NEVER",
+    max_consecutive_auto_reply=2,
+    is_termination_msg=lambda x: (
+        x.get("content", "")
+        .rstrip()
+        .upper()
+        .endswith("TERMINATE")
+    ),
 )
 
-# 2. WORKER AGENT TEMPLATES (STATIC VERSION)
 researcher = autogen.AssistantAgent(
     name="Researcher",
-    system_message="You are a world-class research assistant. Your goal is to find comprehensive and accurate information on a given topic. After finding the information, report it back to the group.",
+    system_message=(
+        "You are a research assistant. Find information on topics "
+        "and report back concisely. When done, say 'Research "
+        "complete.'"
+    ),
     llm_config=llm_config,
 )
 
 science_expert = autogen.AssistantAgent(
     name="Science_Expert",
-    system_message="You are a world-leading expert in all scientific fields. You answer questions accurately based on your deep knowledge. When the research is done, you will provide the final answer.",
+    system_message=(
+        "You are a science expert. Explain topics in simple terms. "
+        "When you have answered the question, say 'TERMINATE'."
+    ),
     llm_config=llm_config,
 )
 
-# 3. THE ORCHESTRATOR AGENT (GROUP CHAT MANAGER)
 groupchat = autogen.GroupChat(
     agents=[user_proxy, researcher, science_expert],
-    messages=[],  # Initialize with an empty list for a new conversation
-    max_round=12,
+    messages=[],
+    max_round=8,
+    speaker_selection_method="round_robin",
 )
 
 orchestrator = autogen.GroupChatManager(
@@ -194,7 +160,7 @@ def persist_conversation_turn(
     log_dir: str = "logs",
 ) -> None:
     """
-    Persist each agent's turn to a local file for post-mortem inspection.
+    Persist each agent turn to a JSONL file.
 
     Args:
         agent_name: Name of the agent sending the message
@@ -215,18 +181,17 @@ def persist_conversation_turn(
         "message": message_content,
     }
 
-    # Append to JSONL file (one JSON object per line)
     with open(filename, "a", encoding="utf-8") as f:
         f.write(json.dumps(turn_data) + "\n")
 
     logging.info(
-        "📝 Turn %d persisted: %s -> %s", turn_number, agent_name, filename
+        "📝 Turn %d: %s", turn_number, agent_name
     )
 
 
 def dump_conversation_state(log_dir: str = "logs") -> None:
     """
-    Log and persist the full conversation state to a file.
+    Save the full conversation state to a JSON file.
 
     Args:
         log_dir: Directory to store the conversation log
@@ -247,31 +212,21 @@ def dump_conversation_state(log_dir: str = "logs") -> None:
         json.dump(conversation_data, f, indent=2)
 
     logging.info("💾 Full conversation saved to: %s", filename)
-    logging.debug(
-        "Conversation state dump: %s", json.dumps(groupchat.messages, indent=2)
-    )
 
 
-# 4. INITIATE THE CONVERSATION
 if __name__ == "__main__":
     base_url = config_list[0]["base_url"]
 
-    # Wait for model to be loaded before starting conversation
     if not wait_for_model_ready(base_url, max_retries=30, retry_delay=2):
-        logging.error("Model server is not ready. Exiting.")
+        logging.error("Model server not ready. Exiting.")
         exit(1)
 
-    # Optional: Additional diagnostics
-    check_local_server(base_url)
-
-    # Create a wrapper to capture each agent's turn
     original_initiate_chat = user_proxy.initiate_chat
 
     def wrapped_initiate_chat(*args, **kwargs):
-        """Wrapper to persist turns during conversation"""
+        """Wrapper to persist turns during conversation."""
         result = original_initiate_chat(*args, **kwargs)
 
-        # Persist each message after conversation completes
         for idx, msg in enumerate(groupchat.messages):
             agent_name = msg.get("name", "unknown")
             content = msg.get("content", "")
@@ -282,12 +237,16 @@ if __name__ == "__main__":
     user_proxy.initiate_chat = wrapped_initiate_chat
 
     logging.info(
-        "User_Proxy (to chat_manager):\n\nResearch the process of photosynthesis and then have the science expert explain it to me in simple terms.\n"
+        "Starting conversation: Research photosynthesis\n"
     )
+    
     user_proxy.initiate_chat(
         orchestrator,
-        message="Research the process of photosynthesis and then have the science expert explain it to me in simple terms.",
+        message=(
+            "Research the process of photosynthesis and have the "
+            "science expert explain it to me in simple terms."
+        ),
     )
 
-    # Dump full conversation state at the end
     dump_conversation_state()
+    logging.info("✓ Conversation complete")
