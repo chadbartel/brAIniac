@@ -207,5 +207,6 @@ pip-selfcheck.json
 
 # Ignore LLM models
 /models/
+/logs/
 
 # End of https://www.toptal.com/developers/gitignore/api/python,visualstudiocode,virtualenv
