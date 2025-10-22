@@ -36,6 +36,7 @@ class AgentRegistry:
         system_message: str,
         capabilities: Optional[List[str]] = None,
         can_route_to: Optional[List[str]] = None,
+        tools: Optional[List[Dict]] = None,
     ) -> autogen.AssistantAgent:
         """
         Register a new agent with the registry.
@@ -46,6 +47,7 @@ class AgentRegistry:
             capabilities: List of capabilities (e.g., ["research",
                 "analysis"])
             can_route_to: List of agent names this agent can route to
+            tools: List of tool definitions for function calling
 
         Returns:
             The created agent
@@ -53,10 +55,15 @@ class AgentRegistry:
         if name in self._agents:
             logger.warning("Agent '%s' already registered, overwriting", name)
 
+        # Create llm_config with tools if provided
+        agent_llm_config = self.llm_config.copy()
+        if tools:
+            agent_llm_config["tools"] = tools
+
         agent = autogen.AssistantAgent(
             name=name,
             system_message=system_message,
-            llm_config=self.llm_config,
+            llm_config=agent_llm_config,
         )
 
         self._agents[name] = agent

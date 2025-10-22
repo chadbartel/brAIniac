@@ -13,6 +13,7 @@ import requests
 # My Modules
 # Local
 from agent_registry import AgentRegistry, create_dynamic_selector
+from tools import TOOL_DEFINITIONS, TOOL_FUNCTIONS
 
 # Configure logging at INFO level
 logging.basicConfig(
@@ -110,38 +111,47 @@ llm_config = {
 # Initialize the agent registry
 registry = AgentRegistry(llm_config)
 
-# Register the User Proxy (not managed by registry, special agent)
+# Register the User Proxy with tool execution capability
 user_proxy = autogen.UserProxyAgent(
     name="User_Proxy",
     system_message=(
-        "You are the human user. After receiving a complete answer, "
-        "reply with: TERMINATE"
+        "You are the human user. You can execute tool calls. "
+        "After receiving a complete answer, reply with: TERMINATE"
     ),
     code_execution_config=False,
     human_input_mode="NEVER",
-    max_consecutive_auto_reply=1,
+    max_consecutive_auto_reply=10,
     is_termination_msg=lambda x: ("terminate" in x.get("content", "").lower()),
+    function_map=TOOL_FUNCTIONS,
 )
 
-# Register the Researcher agent
+# Register the Researcher agent with web search tools
 researcher = registry.register_agent(
     name="Researcher",
     system_message=(
-        "You are a research assistant. When asked to research a topic:\n"
-        "1. Gather comprehensive information from reliable sources\n"
-        "2. Organize the information clearly\n"
-        "3. End your message with: 'NEXT: Science_Expert'\n"
-        "This signals that the Science_Expert should explain next."
+        "You are a research assistant with access to web search tools.\n\n"
+        "IMPORTANT: When asked to research a topic:\n"
+        "1. ALWAYS use search_web() to find current information\n"
+        "2. Use get_current_date() to know what 'today' is\n"
+        "3. Search for the specific topic requested\n"
+        "4. Organize your findings clearly\n"
+        "5. End with: 'NEXT: Policital_Expert'\n\n"
+        "Available tools:\n"
+        "- search_web(query): Search for current information\n"
+        "- search_wikipedia(query): Get factual information\n"
+        "- get_current_date(): Know the current date\n\n"
+        "Always cite your sources and use the tools to get real data."
     ),
     capabilities=["research", "data_gathering", "analysis"],
-    can_route_to=["Science_Expert"],
+    can_route_to=["Policital_Expert"],
+    tools=TOOL_DEFINITIONS,
 )
 
 # Register the Science Expert agent
 science_expert = registry.register_agent(
-    name="Science_Expert",
+    name="Policital_Expert",
     system_message=(
-        "You are a science educator. When the Researcher provides "
+        "You are a political educator. When the Researcher provides "
         "technical information:\n"
         "1. Explain the concepts in simple, easy-to-understand terms\n"
         "2. Use analogies and examples when helpful\n"
@@ -155,7 +165,7 @@ science_expert = registry.register_agent(
 # Create dynamic speaker selector with default flow
 speaker_selector = create_dynamic_selector(
     registry=registry,
-    default_flow=["User_Proxy", "Researcher", "Science_Expert"],
+    default_flow=["User_Proxy", "Researcher", "Policital_Expert"],
 )
 
 # Create the group chat with dynamic speaker selection
@@ -258,13 +268,14 @@ if __name__ == "__main__":
 
     user_proxy.initiate_chat = wrapped_initiate_chat
 
-    logging.info("Starting conversation: Research photosynthesis\n")
+    logging.info("Starting conversation: Research Geoerge Santos\n")
 
     user_proxy.initiate_chat(
         orchestrator,
         message=(
-            "Research the process of photosynthesis and have the "
-            "science expert explain it to me in simple terms."
+            "Research the current political scandal surrounding George Santos and "
+            "have the political expert explain it to me in simple terms. "
+            "What was the most recent development? Is he still in jail?"
         ),
     )
 
