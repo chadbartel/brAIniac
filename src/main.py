@@ -188,7 +188,7 @@ speaker_selector = create_dynamic_selector(
 
 # Create the group chat with dynamic speaker selection
 groupchat = autogen.GroupChat(
-    agents=[user_proxy, researcher, political_expert],
+    agents=[user_proxy, researcher, science_expert],
     messages=[],
     max_round=25,
     speaker_selection_method=speaker_selector,
