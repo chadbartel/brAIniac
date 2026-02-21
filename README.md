@@ -71,18 +71,21 @@ docker compose --profile voice up -d
 ### 3. Interact with the orchestrator
 
 **Terminal CLI** (streams agent thought process):
+
 ```bash
 cd tests && poetry install
 poetry run python cli_tester.py
 ```
 
 **Gradio Web UI** (browser chat with expandable Thought Process panel):
+
 ```bash
 poetry run python web_tester.py
 # Open http://localhost:7860
 ```
 
 **Direct API** (curl):
+
 ```bash
 curl -X POST http://localhost:8300/run \
   -H "Content-Type: application/json" \
