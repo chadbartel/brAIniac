@@ -120,11 +120,19 @@ services:
       OLLAMA_MODEL: "${OLLAMA_MODEL:-dolphin-llama3}"
       RESEARCH_SERVER_URL: "http://research-server:8100/sse"
       MAX_ROUNDS: "${MAX_ROUNDS:-20}"
+      API_HOST: "0.0.0.0"
+      API_PORT: "8300"
     depends_on:
       ollama:
         condition: service_healthy
       research-server:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8300/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     logging: *default-logging
 
   # ---------------------------------------------------------------------------

@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -207,6 +209,61 @@ def _dispatch_function(name: str, arguments: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Streaming hook
+# ---------------------------------------------------------------------------
+
+
+def _attach_stream_hook(
+    agents: list[Any],
+    on_message: Callable[[dict[str, Any]], None],
+) -> None:
+    """Monkey-patch ``_print_received_message`` on every agent so each
+    incoming message also fires the *on_message* callback.
+
+    Args:
+        agents: AutoGen agent instances to instrument.
+        on_message: Callback receiving a dict with keys ``agent`` (sender
+            name), ``recipient`` (receiver name), ``content`` (text), and
+            ``type`` (``"message"`` or ``"function_call"``).
+    """
+    for agent in agents:
+        original = agent._print_received_message
+
+        def _hook(
+            message: dict[str, Any] | str,
+            sender: Any,
+            *,
+            _original: Any = original,
+            _recipient: Any = agent,
+        ) -> None:
+            _original(message, sender)
+            if isinstance(message, str):
+                content: str = message
+                event_type: str = "message"
+            else:
+                fc = message.get("function_call")
+                if fc:
+                    content = (
+                        f"[tool: {fc.get('name')}] "
+                        f"{fc.get('arguments', '')}"
+                    )
+                    event_type = "function_call"
+                else:
+                    content = message.get("content") or ""
+                    event_type = "message"
+            on_message(
+                {
+                    "agent": sender.name,
+                    "recipient": _recipient.name,
+                    "content": content,
+                    "type": event_type,
+                }
+            )
+
+        agent._print_received_message = _hook  # type: ignore[method-assign]
+
+
+# ---------------------------------------------------------------------------
 # Agent factory
 # ---------------------------------------------------------------------------
 
@@ -341,11 +398,17 @@ def _requires_human_approval(
 # ---------------------------------------------------------------------------
 
 
-def run_task(user_prompt: str) -> str:
+def run_task(
+    user_prompt: str,
+    on_message: Callable[[dict[str, Any]], None] | None = None,
+) -> str:
     """Execute a user task through the multi-agent orchestration pipeline.
 
     Args:
         user_prompt: The raw user request.
+        on_message: Optional callback invoked for every agent message or
+            tool call.  Receives a dict with keys ``agent``, ``recipient``,
+            ``content``, and ``type``.
 
     Returns:
         The final synthesised answer from the OrchestratorAgent.
@@ -359,6 +422,9 @@ def run_task(user_prompt: str) -> str:
     orchestrator = _build_orchestrator_agent()
     researcher = _build_research_agent()
     human = _build_human_proxy()
+
+    if on_message is not None:
+        _attach_stream_hook([orchestrator, researcher, human], on_message)
 
     # Pre-flight approval check: ask the orchestrator to outline its plan
     # first, then gate on sensitive keywords before entering the group chat.

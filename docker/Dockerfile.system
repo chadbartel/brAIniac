@@ -20,4 +20,4 @@ COPY src/ ./src/
 
 EXPOSE 8300
 
-CMD ["system-server"]
+CMD ["system-server-api"]
