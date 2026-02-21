@@ -1,0 +1,46 @@
+[tool.poetry]
+name = "brainiac-voice-server"
+version = "0.1.0"
+description = "FastMCP voice server: STT via faster-whisper, TTS via Kokoro/Piper"
+authors = ["brAIniac Contributors"]
+packages = [{ include = "voice_server", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastmcp = "^2.0.0"
+faster-whisper = "^1.0.0"
+# kokoro-tts or piper-tts — uncomment the one you prefer:
+# kokoro = "^0.9.0"
+# piper-tts = "^1.2.0"
+soundfile = "^0.12.0"
+numpy = "^1.26.0"
+pydantic = "^2.7.0"
+uvicorn = { extras = ["standard"], version = "^0.30.0" }
+
+[tool.poetry.group.dev.dependencies]
+black = "^24.0.0"
+isort = "^5.13.0"
+flake8 = "^7.0.0"
+mypy = "^1.9.0"
+pytest = "^8.0.0"
+pytest-asyncio = "^0.23.0"
+
+[tool.poetry.scripts]
+voice-server = "voice_server.server:run"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 79
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 79
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true

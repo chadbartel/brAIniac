@@ -6,6 +6,7 @@ including capability-based routing and on-demand agent creation.
 """
 
 # Standard Library
+import re
 import logging
 from typing import Dict, List, Optional, Callable
 
@@ -168,132 +169,130 @@ def create_dynamic_selector(
         groupchat: autogen.GroupChat,
     ) -> autogen.Agent:
         """
-        Select next speaker dynamically based on registry.
+        Select the next speaker based on conversation state.
 
         Args:
-            last_speaker: The agent who just spoke
-            groupchat: The GroupChat instance
+            last_speaker: The agent who spoke last
+            groupchat: The group chat instance
 
         Returns:
             The next agent to speak
         """
-        messages = groupchat.messages
-        last_message = messages[-1] if messages else {}
-        content = last_message.get("content", "").lower()
+        # Get the last speaker name
+        last_speaker_name = getattr(last_speaker, "name", "")
 
-        logger.debug("Selecting next speaker after '%s'", last_speaker.name)
-
-        # 0. PRIORITY: Check if last message contains a tool call
-        # Tool calls should ALWAYS go to User_Proxy for execution
-        if last_message.get("tool_calls") or "suggested tool call" in content:
-            # Find User_Proxy agent
-            for agent in groupchat.agents:
-                if "proxy" in agent.name.lower():
-                    logger.info(
-                        "Routing tool call from '%s' to '%s' for execution",
-                        last_speaker.name,
-                        agent.name,
-                    )
-                    return agent
-
-        # 0b. If User_Proxy just executed a tool, return to the agent that called it
-        if "proxy" in last_speaker.name.lower() and len(messages) >= 2:
-            # Look for the agent that made the tool call
-            for i in range(len(messages) - 2, -1, -1):
-                prev_msg = messages[i]
-                prev_content = prev_msg.get("content", "").lower()
-                if "suggested tool call" in prev_content or prev_msg.get(
-                    "tool_calls"
-                ):
-                    # Find the agent that made this call
-                    sender_name = prev_msg.get("name", "")
-                    for agent in groupchat.agents:
-                        if agent.name == sender_name:
-                            logger.info(
-                                "Returning tool results from '%s' to '%s'",
-                                last_speaker.name,
-                                agent.name,
-                            )
-                            return agent
-                    break
-
-        # 1. Check for explicit routing in message
-        if "next:" in content:
-            # Extract agent name after "next:"
-            try:
-                agent_name = content.split("next:")[1].split()[0].strip()
-                agent = registry.get_agent(agent_name)
-                if agent:
-                    logger.info("Explicit routing to '%s'", agent_name)
-                    return agent
-                logger.warning("Agent '%s' not found in registry", agent_name)
-            except (IndexError, AttributeError) as exc:
-                logger.debug("Failed to parse explicit routing: %s", exc)
-
-        # 2. Check routing rules from registry
-        routing_options = registry.get_routing_options(last_speaker.name)
-        if routing_options:
-            next_agent = routing_options[0]
-            logger.info(
-                "Following routing rule: '%s' -> '%s'",
-                last_speaker.name,
-                next_agent.name,
-            )
-            return next_agent
-
-        # 3. Capability-based routing
-        if any(
-            keyword in content
-            for keyword in ["research", "find", "gather", "investigate"]
-        ):
-            researchers = registry.find_agents_by_capability("research")
-            if researchers and researchers[0] != last_speaker:
-                logger.info("Routing to researcher based on content keywords")
-                return researchers[0]
-
-        if any(
-            keyword in content
-            for keyword in [
-                "explain",
-                "simplify",
-                "teach",
-                "clarify",
-            ]
-        ):
-            explainers = registry.find_agents_by_capability("explanation")
-            if explainers and explainers[0] != last_speaker:
-                logger.info("Routing to explainer based on content keywords")
-                return explainers[0]
-
-        # 4. Follow default flow if provided
-        if default_flow:
-            try:
-                current_idx = default_flow.index(last_speaker.name)
-                next_idx = (current_idx + 1) % len(default_flow)
-                next_agent_name = default_flow[next_idx]
-                next_agent = registry.get_agent(next_agent_name)
-                if next_agent:
-                    logger.info(
-                        "Following default flow: '%s' -> '%s'",
-                        last_speaker.name,
-                        next_agent_name,
-                    )
-                    return next_agent
-            except (ValueError, IndexError):
-                pass
-
-        # 5. Fallback to round-robin through groupchat agents
-        agents = groupchat.agents
-        current_idx = agents.index(last_speaker)
-        next_idx = (current_idx + 1) % len(agents)
-        next_agent = agents[next_idx]
-
-        logger.info(
-            "Fallback round-robin: '%s' -> '%s'",
-            last_speaker.name,
-            next_agent.name,
+        # Extract content from the last message for content-based routing
+        last_message = groupchat.messages[-1] if groupchat.messages else {}
+        content = (
+            last_message.get("content", "").lower()
+            if isinstance(last_message.get("content"), str)
+            else ""
         )
 
-        return next_agent
+        # Check for tool calls to route to User_Proxy
+        if last_message.get("tool_calls"):
+            logger.info(
+                f"Routing tool call from '{last_speaker_name}' to 'User_Proxy' for execution"
+            )
+            return next(a for a in groupchat.agents if a.name == "User_Proxy")
+
+        # Check for tool results being returned to the original caller
+        if (
+            last_speaker_name == "User_Proxy"
+            and last_message.get("tool_call_id")
+            and len(groupchat.messages) >= 3
+        ):
+
+            # Find the agent who made the tool call
+            for i in range(len(groupchat.messages) - 2, -1, -1):
+                msg = groupchat.messages[i]
+                if msg.get("tool_calls") and any(
+                    tc.get("id") == last_message.get("tool_call_id")
+                    for tc in msg.get("tool_calls", [])
+                ):
+                    caller_name = msg.get("name")
+                    if caller_name and caller_name in registry._agents:
+                        logger.info(
+                            f"Returning tool results from 'User_Proxy' to '{caller_name}'"
+                        )
+                        return registry._agents[caller_name]
+
+        # Check for "NEXT:" routing directives in the message content
+        if "next:" in content:
+            # Extract agent name after "NEXT:"
+            next_agent_pattern = r"next:\s*(\w+)"
+            match = re.search(next_agent_pattern, content, re.IGNORECASE)
+            if match:
+                next_agent_name = match.group(1).strip()
+                # Case-insensitive matching for agent names
+                for name in registry._agents:
+                    if name.lower() == next_agent_name.lower():
+                        logger.info(
+                            f"Following routing directive: '{last_speaker_name}' -> '{name}'"
+                        )
+                        return registry._agents[name]
+                logger.warning(
+                    f"Agent '{next_agent_name}' not found in registry"
+                )
+
+        # Check for explicit routing rules
+        if last_speaker_name in registry._routing_rules:
+            for target_name in registry._routing_rules[last_speaker_name]:
+                if target_name in registry._agents:
+                    logger.info(
+                        f"Following routing rule: '{last_speaker_name}' -> '{target_name}'"
+                    )
+                    return registry._agents[target_name]
+
+        # Check for keyword-based routing
+        if last_speaker_name == "User_Proxy" and content:
+            research_keywords = [
+                "research",
+                "find",
+                "search",
+                "look up",
+                "information",
+                "data",
+                "study",
+                "investigate",
+            ]
+
+            if any(keyword in content for keyword in research_keywords):
+                logger.info("Routing to researcher based on content keywords")
+                return registry._agents.get("Researcher")
+
+        # Follow default flow if defined
+        if default_flow and last_speaker_name in default_flow:
+            idx = default_flow.index(last_speaker_name)
+            if idx < len(default_flow) - 1:
+                next_name = default_flow[idx + 1]
+                if next_name in registry._agents:
+                    logger.info(
+                        f"Following default flow: '{last_speaker_name}' -> '{next_name}'"
+                    )
+                    return registry._agents[next_name]
+
+        # Round-robin fallback (pick next agent)
+        agents = groupchat.agents
+        if len(agents) > 1:
+            last_idx = next(
+                (
+                    i
+                    for i, a in enumerate(agents)
+                    if a.name == last_speaker_name
+                ),
+                -1,
+            )
+            next_idx = (last_idx + 1) % len(agents)
+            logger.info(
+                f"Fallback round-robin: '{last_speaker_name}' -> '{agents[next_idx].name}'"
+            )
+            return agents[next_idx]
+
+        # Default to first agent
+        logger.warning(
+            f"No suitable next speaker found after '{last_speaker_name}'"
+        )
+        return agents[0]
 
     return select_speaker

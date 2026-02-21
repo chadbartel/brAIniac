@@ -1,0 +1,196 @@
+# brainiac/docker/docker-compose.yml
+#
+# Orchestrates:
+#   - ollama          : local LLM inference (OpenAI-compatible API)
+#   - research-server : FastMCP web search + ChromaDB memory
+#   - system-server   : AutoGen orchestrator
+#   - voice-server    : STT/TTS (optional, comment out if not needed)
+#   - chromadb        : persistent vector store for research-server
+#   - tailscale       : secure remote access sidecar
+#
+# Usage:
+#   TAILSCALE_AUTHKEY=<your-key> docker compose up -d
+#
+# Environment variables can be placed in a .env file next to this file.
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Ollama — local LLM inference
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: brainiac-ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_KEEP_ALIVE: "24h"
+    # Pull the default model on first start
+    entrypoint: >
+      sh -c "ollama serve &
+             sleep 5 &&
+             ollama pull ${OLLAMA_MODEL:-dolphin-llama3} &&
+             wait"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # ChromaDB — vector memory backend for research-server
+  # ---------------------------------------------------------------------------
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: brainiac-chromadb
+    restart: unless-stopped
+    ports:
+      - "${CHROMA_PORT:-8000}:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Research Server — FastMCP (DDG search + ChromaDB memory)
+  # ---------------------------------------------------------------------------
+  research-server:
+    build:
+      context: ../servers/research-server
+      dockerfile: ../../docker/Dockerfile.research
+    container_name: brainiac-research-server
+    restart: unless-stopped
+    ports:
+      - "${RESEARCH_PORT:-8100}:8100"
+    environment:
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8100"
+      USE_REMOTE_CHROMA: "true"
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+      CHROMA_COLLECTION: "${CHROMA_COLLECTION:-brainiac_memory}"
+      MAX_SEARCH_RESULTS: "${MAX_SEARCH_RESULTS:-8}"
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8100/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # System Server — AutoGen orchestrator
+  # ---------------------------------------------------------------------------
+  system-server:
+    build:
+      context: ../servers/system-server
+      dockerfile: ../../docker/Dockerfile.system
+    container_name: brainiac-system-server
+    restart: unless-stopped
+    ports:
+      - "${SYSTEM_PORT:-8300}:8300"
+    environment:
+      OLLAMA_BASE_URL: "http://ollama:11434/v1"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-dolphin-llama3}"
+      RESEARCH_SERVER_URL: "http://research-server:8100/sse"
+      MAX_ROUNDS: "${MAX_ROUNDS:-20}"
+    depends_on:
+      ollama:
+        condition: service_healthy
+      research-server:
+        condition: service_healthy
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Voice Server — STT/TTS (optional)
+  # ---------------------------------------------------------------------------
+  voice-server:
+    build:
+      context: ../servers/voice-server
+      dockerfile: ../../docker/Dockerfile.voice
+    container_name: brainiac-voice-server
+    restart: unless-stopped
+    ports:
+      - "${VOICE_PORT:-8200}:8200"
+    environment:
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8200"
+      WHISPER_MODEL_SIZE: "${WHISPER_MODEL_SIZE:-base}"
+      WHISPER_DEVICE: "cpu"
+      WHISPER_COMPUTE_TYPE: "int8"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8200/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+    profiles:
+      - voice  # opt-in: `docker compose --profile voice up`
+
+  # ---------------------------------------------------------------------------
+  # Tailscale — secure remote access sidecar
+  # ---------------------------------------------------------------------------
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: brainiac-tailscale
+    hostname: brainiac
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - tailscale_state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+      - ./tailscale/tailscaled.env:/tailscaled.env:ro
+    environment:
+      TS_AUTHKEY: "${TAILSCALE_AUTHKEY}"
+      TS_STATE_DIR: "/var/lib/tailscale"
+      TS_EXTRA_ARGS: "--advertise-tags=tag:brainiac --accept-routes"
+      TS_SERVE_CONFIG: "/tailscaled.env"
+    network_mode: host          # must use host to expose all brainiac ports via Tailscale
+    logging: *default-logging
+
+# ---------------------------------------------------------------------------
+# Named volumes
+# ---------------------------------------------------------------------------
+volumes:
+  ollama_data:
+    name: brainiac_ollama_data
+  chroma_data:
+    name: brainiac_chroma_data
+  tailscale_state:
+    name: brainiac_tailscale_state
+
+# ---------------------------------------------------------------------------
+# Networks
+# ---------------------------------------------------------------------------
+networks:
+  default:
+    name: brainiac_net
+    driver: bridge

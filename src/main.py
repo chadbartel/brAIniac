@@ -9,7 +9,6 @@ from typing import Any, Dict
 
 # Force UTF-8 encoding for Windows console
 if sys.platform == "win32":
-    # Standard Library
     import io
 
     sys.stdout = io.TextIOWrapper(
@@ -30,27 +29,76 @@ load_dotenv()
 from agent_registry import AgentRegistry, create_dynamic_selector
 from tools import TOOL_DEFINITIONS, TOOL_FUNCTIONS
 
-# Configure logging at INFO level
+# Configure logging at DEBUG level
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
-# Define prompts
+# Define prompts with explicit instructions and examples
 USER_PROXY_PROMPT = """
 A human admin who will give the primary task. Interact with the other agents to get the task done.
 The user's task must be completed.
 """
 
+# Researcher prompt with few-shot examples for the specific model
 RESEARCHER_PROMPT = """
-You are a master researcher. Your role is to take a user's request, break it down into searchable questions, and use the tools at your disposal to find the most accurate and up-to-date information.
+You are a COMPREHENSIVE research assistant with web search tools. Your job is to:
+1. ALWAYS start with the get_current_date() tool to know today's date
+2. Use search_web() multiple times with different queries to get comprehensive results
+3. Provide detailed synthesis of all findings in a clear format
+4. End with "NEXT: Political_Expert" (exact text)
 
-**Your Process:**
-1.  **Deconstruct:** Break down the user's complex request into a series of smaller, specific questions that can be answered with web searches.
-2.  **Search:** Use the `search_web` tool for each question to find relevant articles and sources.
-3.  **Scrape & Analyze:** For the most promising URLs from your search, use the `scrape_url` tool to read the full content.
-4.  **Synthesize:** After gathering all the information, compile a comprehensive report that directly answers the user's original request. Address each point of the request clearly.
-5.  **Final Output:** Present your final, synthesized report to the group. Do not ask for the next step. Simply provide the completed research.
+CRITICAL: You MUST use the tools. DO NOT say "I don't know" or "I'll search" - just use the tools directly.
+
+EXAMPLE OF HOW YOU SHOULD RESPOND:
+
+To research a topic like "Trump latest news":
+
+Step 1: Use get_current_date()
+***** Suggested tool call: get_current_date *****
+Arguments: {}
+******************************************************************************
+
+After getting date: "Today is October 22, 2025. I'll search for latest Trump news."
+
+Step 2: Use search_web() with specific queries
+***** Suggested tool call: search_web *****
+Arguments: {"query":"Trump latest news October 2025"}
+******************************************************************************
+
+Step 3: Search with variations
+***** Suggested tool call: search_web *****
+Arguments: {"query":"President Trump recent developments 2025"}
+******************************************************************************
+
+Step 4: Provide comprehensive report with specific details from searches
+"Based on my research from October 22, 2025, Trump has [specific findings from search results]..."
+
+Step 5: End with routing phrase
+"NEXT: Political_Expert"
+
+FOLLOW THIS EXACT PATTERN - USE THE TOOLS!
+"""
+
+# Political Expert prompt with clear ending instruction
+POLITICAL_EXPERT_PROMPT = """
+You are a political educator who explains complex political topics in simple terms.
+
+INSTRUCTIONS:
+1. When the Researcher provides information about a political topic or figure, explain it in 2-3 simple paragraphs
+2. Focus on: What happened? Why is it important? What might happen next?
+3. Use analogies to make complex ideas easier to understand
+4. ALWAYS end your message with the exact text: "TERMINATE"
+
+IMPORTANT: Do not ask follow-up questions or be conversational. Your job is to explain and end with TERMINATE.
+
+EXAMPLE RESPONSE:
+"George Santos was a congressman who lied about many things, including his work history and education. This matters because elected officials are supposed to be truthful and represent their constituents honestly.
+
+The recent developments show that [explanation of the latest news]. This could lead to [potential consequences or outcomes].
+
+TERMINATE"
 """
 
 
@@ -134,14 +182,38 @@ config_list = [
     }
 ]
 
-# LLM configuration
+# LLM configuration with higher temperature for more decisive responses
 llm_config = {
     "config_list": config_list,
-    "temperature": 0.7,
+    "temperature": 0.8,  # Increased from 0.7 for more decisive outputs
 }
 
 # Initialize the agent registry
 registry = AgentRegistry(llm_config)
+
+
+# Enhanced termination detection for more reliable conversation ending
+def is_termination_msg(message: Dict[str, Any]) -> bool:
+    """
+    Checks if a message indicates conversation termination.
+
+    Args:
+        message: The message to check
+
+    Returns:
+        True if the message should terminate the conversation
+    """
+    if not message.get("content"):
+        return False
+
+    content = message.get("content", "").upper()
+    return (
+        "TERMINATE" in content
+        or
+        # Also check for partial completions that suggest termination
+        (content.endswith("TERM") and len(content) > 10)
+    )
+
 
 # Register the User Proxy with tool execution capability
 user_proxy = autogen.UserProxyAgent(
@@ -150,9 +222,7 @@ user_proxy = autogen.UserProxyAgent(
     code_execution_config=False,
     human_input_mode="NEVER",
     max_consecutive_auto_reply=15,
-    is_termination_msg=lambda x: (
-        x.get("content", "") and ("TERMINATE" in x.get("content", "").upper())
-    ),
+    is_termination_msg=is_termination_msg,
     function_map=TOOL_FUNCTIONS,
 )
 
@@ -165,17 +235,10 @@ researcher = registry.register_agent(
     tools=TOOL_DEFINITIONS,
 )
 
-# Register the Science Expert agent
-science_expert = registry.register_agent(
-    name="Policital_Expert",
-    system_message=(
-        "You are a political educator. When the Researcher provides "
-        "technical information:\n"
-        "1. Explain the concepts in simple, easy-to-understand terms\n"
-        "2. Use analogies and examples when helpful\n"
-        "3. End your explanation with: TERMINATE\n"
-        "This completes the conversation."
-    ),
+# Register the Political Expert agent (fixed name)
+political_expert = registry.register_agent(
+    name="Political_Expert",  # Note: fixed spelling from "Policital_Expert"
+    system_message=POLITICAL_EXPERT_PROMPT,
     capabilities=["explanation", "simplification", "teaching"],
     can_route_to=["User_Proxy"],
 )
@@ -188,9 +251,9 @@ speaker_selector = create_dynamic_selector(
 
 # Create the group chat with dynamic speaker selection
 groupchat = autogen.GroupChat(
-    agents=[user_proxy, researcher, science_expert],
+    agents=[user_proxy, researcher, political_expert],
     messages=[],
-    max_round=15,
+    max_round=25,
     speaker_selection_method=speaker_selector,
     allow_repeat_speaker=False,
 )
@@ -286,14 +349,17 @@ if __name__ == "__main__":
 
     user_proxy.initiate_chat = wrapped_initiate_chat
 
-    logging.info("Starting conversation: Research Geoerge Santos\n")
+    logging.info("Starting conversation: Research George Santos\n")
 
     user_proxy.initiate_chat(
         orchestrator,
         message=(
-            "Research the current political scandal surrounding George Santos and "
-            "have the political expert explain it to me in simple terms. "
-            "What was the most recent development? Is he still in jail?"
+            "Research George Santos. I need current information about:\n"
+            "1. Who is he and what crimes did he commit?\n"
+            "2. What was his sentence?\n"
+            "3. What's the most recent development in 2025?\n"
+            "4. Is he currently in prison?\n\n"
+            "Make sure to use search tools to find recent 2025 information."
         ),
     )
 

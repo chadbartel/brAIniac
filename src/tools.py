@@ -9,6 +9,7 @@ from datetime import datetime
 
 # Third Party
 import requests
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
@@ -175,31 +176,6 @@ def _search_duckduckgo_html(query: str, num_results: int) -> str:
         return ""
 
 
-def search_news(query: str, days_back: int = 7) -> str:
-    """
-    Search for recent news articles (simulated - you'd use a real news API).
-
-    Args:
-        query: The search query
-        days_back: How many days back to search
-
-    Returns:
-        Formatted news results
-    """
-    # In production, use NewsAPI, Google News API, or similar
-    # For now, return a message indicating this needs implementation
-    return (
-        f"News search for '{query}' (last {days_back} days):\n\n"
-        "Note: This requires a news API integration. "
-        "Consider using:\n"
-        "- NewsAPI (https://newsapi.org/)\n"
-        "- Google News API\n"
-        "- Bing News Search API\n\n"
-        "For now, use the general web_search tool which may include "
-        "recent information."
-    )
-
-
 def get_current_date() -> str:
     """
     Get the current date and time.
@@ -256,6 +232,41 @@ def search_wikipedia(query: str) -> str:
     except Exception as e:
         logger.error("Wikipedia search failed: %s", e)
         return f"Error searching Wikipedia: {str(e)}"
+
+
+def scrape_url(url: str) -> str:
+    """
+    Scrapes the text content from a given URL.
+
+    Args:
+        url: The URL to scrape.
+
+    Returns:
+        The text content of the URL, or an error message if scraping fails.
+    """
+    logging.info(f"Scraping URL: {url}")
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Remove script and style elements
+        for script_or_style in soup(["script", "style"]):
+            script_or_style.decompose()
+
+        # Get text and clean it up
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (
+            phrase.strip() for line in lines for phrase in line.split("  ")
+        )
+        text = "\n".join(chunk for chunk in chunks if chunk)
+        return text[
+            :8000
+        ]  # Return the first 8000 characters to manage context size
+    except requests.RequestException as e:
+        logging.error(f"Error scraping URL {url}: {e}")
+        return f"Error: Could not retrieve content from {url}."
 
 
 # Tool definitions for autogen
@@ -318,6 +329,26 @@ TOOL_DEFINITIONS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "scrape_url",
+            "description": (
+                "Scrape the text content from a given URL. Use this to "
+                "extract information from web pages."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to scrape",
+                    }
+                },
+                "required": ["url"],
+            },
+        },
+    },
 ]
 
 # Map function names to actual functions
@@ -325,5 +356,5 @@ TOOL_FUNCTIONS = {
     "search_web": search_web,
     "search_wikipedia": search_wikipedia,
     "get_current_date": get_current_date,
-    "search_news": search_news,
+    "scrape_url": scrape_url,
 }
