@@ -14,9 +14,13 @@ RUN pip install "poetry==$POETRY_VERSION"
 WORKDIR /app
 
 COPY pyproject.toml poetry.lock* ./
-RUN poetry install --only main --no-interaction --no-ansi
+# Install dependencies only (no project root) — this layer is cached unless
+# pyproject.toml / poetry.lock changes.
+RUN poetry install --only main --no-interaction --no-ansi --no-root
 
+# Copy source now that deps are installed, then install the project package.
 COPY src/ ./src/
+RUN poetry install --only main --no-interaction --no-ansi
 
 EXPOSE 8300
 
