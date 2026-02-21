@@ -1,195 +1,152 @@
 # brAIniac
 
-## Project Overview
+> Decentralized, local-first AI ecosystem — modular, containerized, uncensored.
 
-**brAIniac** is a local AI-powered assistant that leverages large language models (LLMs) to provide intelligent responses and assistance. The project uses llama.cpp with CUDA acceleration to run quantized models efficiently on local hardware, providing privacy and control over your AI interactions.
+## Architecture
 
-## Features
+```text
+brAIniac/                           # Project root
+├── servers/
+│   ├── research-server/        # FastMCP: DuckDuckGo search + ChromaDB memory
+│   ├── system-server/          # AutoGen orchestrator + dynamic agent delegation
+│   └── voice-server/           # faster-whisper STT + Kokoro/Piper TTS (optional)
+├── docker/
+│   ├── docker-compose.yml      # Full stack orchestration
+│   ├── Dockerfile.research
+│   ├── Dockerfile.system
+│   ├── Dockerfile.voice
+│   └── tailscale/              # Secure remote access via Tailscale
+│       └── tailscaled.env
+├── models/                     # GGUF model files
+├── pyproject.toml              # Workspace-level dev tooling
+└── README.md
+```
 
-- Local LLM server using llama.cpp with CUDA support
-- Docker containerization for easy deployment
-- OpenAI-compatible API endpoint
-- GPU acceleration for faster inference
-- Support for various quantized GGUF model formats
+### Core Design Principles
 
-## Prerequisites
+| Principle | Implementation |
+| --- | --- |
+| **Local-first** | All inference via Ollama (GGUF models, no cloud calls) |
+| **Dynamic delegation** | OrchestratorAgent decomposes tasks → instantiates worker agents per step |
+| **Single Responsibility** | Each MCP server owns exactly one domain |
+| **Human-in-the-loop** | Destructive actions gate on explicit human approval |
+| **Uncensored** | `dolphin-llama3` (or any uncensored GGUF) via Ollama |
 
-### System Requirements
+---
 
-- **Operating System**: Windows 10/11 (WSL 2 not required)
-- **GPU**: NVIDIA GPU with CUDA support (Compute Capability 7.0+)
-- **RAM**: 16GB+ recommended
-- **Storage**: Sufficient space for model files (4-8GB per model)
+## Quick Start
 
-### Required Software
+### Prerequisites
 
-1. **Docker Desktop**
-   - Download from: [https://www.docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop)
-   - No additional configuration required for GPU support
+- Docker Engine ≥ 26 with the Compose plugin
+- (Optional) NVIDIA GPU + `nvidia-container-toolkit` for GPU inference
+- A Tailscale auth key (only if you want remote access)
 
-2. **NVIDIA GPU Drivers**
-   - Download the latest drivers for your GPU from: [https://www.nvidia.com/Download/index.aspx](https://www.nvidia.com/Download/index.aspx)
-   - Ensure drivers are up to date for Docker GPU access
-
-3. **Build Tools for Visual Studio 2022** (Windows only)
-   - Required for compiling Python packages with native extensions
-   - Download from: [https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022)
-   - During installation, select "Desktop development with C++"
-   - This is required for installing `llama-cpp-python` and other packages with C++ dependencies
-
-4. **Python 3.11+**
-   - Download from: [https://www.python.org/downloads/](https://www.python.org/downloads/)
-   - Ensure Python is added to your system PATH
-
-5. **Poetry** (Python dependency management)
-
-   ```bash
-   pip install poetry
-   ```
-
-## Installation
-
-1. **Clone the repository**
-
-   ```bash
-   git clone https://github.com/yourusername/brAIniac.git
-   cd brAIniac
-   ```
-
-2. **Download a model**
-
-   - Create a `models` directory in the project root
-   - Download a GGUF format model (e.g., from [Hugging Face](https://huggingface.co))
-   - Place the model file in the `models` directory
-   - Example: `luna-ai-llama2-uncensored.Q4_K_M.gguf`
-
-3. **Install Python dependencies**
-
-   ```bash
-   poetry install
-   ```
-
-4. **Build and run the Docker container**
-
-   ```bash
-   docker-compose up --build
-   ```
-
-## Usage
-
-### Starting the Server
+### 1. Configure environment
 
 ```bash
-docker-compose up
+cp docker/.env.example docker/.env
+# Edit docker/.env — set TAILSCALE_AUTHKEY, OLLAMA_MODEL, etc.
 ```
 
-The server will be available at `http://localhost:8080`
-
-### Testing the Server
-
-Run the test script to verify the server is working:
+### 2. Start the stack
 
 ```bash
-poetry run python test_server.py
+cd docker
+docker compose up -d
 ```
 
-### Making API Requests
+Ollama will automatically pull `dolphin-llama3` on first start (≈ 5 GB).
 
-The server exposes an OpenAI-compatible API:
+To include the voice server:
 
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:8080/v1",
-    api_key="not-needed",
-)
-
-completion = client.chat.completions.create(
-    model="local-model",
-    messages=[
-        {"role": "user", "content": "Hello, how are you?"}
-    ],
-    temperature=0.7,
-    max_tokens=100,
-)
-
-print(completion.choices[0].message.content)
+```bash
+docker compose --profile voice up -d
 ```
 
-## Configuration
+### 3. Run the orchestrator interactively
 
-### Docker Compose Settings
-
-Edit `docker-compose.yml` to customize:
-
-- Model path: `--model /models/your-model.gguf`
-- Context size: `--ctx-size 4096`
-- GPU layers: `--n-gpu-layers -1` (-1 for all layers)
-- Port: Change `8080:8080` to your preferred port
-
-### Server Parameters
-
-Available llama-server parameters:
-
-- `--host`: Server host (default: 127.0.0.1)
-- `--port`: Server port (default: 8080)
-- `--ctx-size`: Context window size
-- `--n-gpu-layers`: Number of layers to offload to GPU
-- `--chat-template`: Chat template format (e.g., chatml)
-
-## Troubleshooting
-
-### CUDA Driver Errors
-
-If you see "CUDA driver is a stub library":
-
-- Ensure NVIDIA drivers are installed on the host
-- Verify NVIDIA Container Toolkit is installed in WSL 2
-- Check that Docker is using the nvidia runtime
-
-### Build Errors on Windows
-
-If you encounter compilation errors:
-
-- Install Build Tools for Visual Studio 2022
-- Ensure "Desktop development with C++" workload is selected
-- Restart your terminal after installation
-
-### Out of Memory Errors
-
-If the model runs out of memory:
-
-- Reduce `--ctx-size` in docker-compose.yml
-- Use a smaller quantized model (e.g., Q4_K_M instead of Q8_0)
-- Reduce `--n-gpu-layers` if needed
-
-## Project Structure
-
-```plaintext
-brAIniac/
-├── models/                 # Model files (GGUF format)
-├── .github/
-│   └── copilot-instructions.md
-├── docker-compose.yml      # Docker Compose configuration
-├── Dockerfile             # Docker image definition
-├── pyproject.toml         # Poetry dependencies
-├── test_server.py         # Server test script
-└── README.md             # This file
+```bash
+docker compose exec system-server system-server
 ```
+
+---
+
+## Services & Ports
+
+| Service | Port | Description |
+| --- | --- | --- |
+| Ollama | 11434 | OpenAI-compatible LLM inference |
+| ChromaDB | 8000 | Vector memory backend |
+| research-server | 8100 | FastMCP: search + memory tools |
+| system-server | 8300 | AutoGen orchestrator REPL |
+| voice-server | 8200 | STT/TTS (opt-in via `--profile voice`) |
+
+---
+
+## Server Details
+
+### research-server
+
+FastMCP server exposing three tools over SSE (`http://research-server:8100/sse`):
+
+| Tool | Description |
+| --- | --- |
+| `search_web(query, max_results)` | DuckDuckGo text search |
+| `store_memory(text, metadata, doc_id)` | Embed and persist to ChromaDB |
+| `query_memory(query, top_k)` | Semantic recall from ChromaDB |
+
+### system-server (Orchestrator)
+
+AutoGen `GroupChat` with three agents:
+
+- **OrchestratorAgent** — decomposes tasks, builds plans, delegates, synthesises results
+- **ResearchAgent** — calls research-server tools; checks memory before searching
+- **HumanProxy** — intercepts any action containing sensitive keywords (`delete`, `deploy`, etc.) and requires explicit `yes` before proceeding
+
+### voice-server
+
+Scaffold for STT (`faster-whisper`) and TTS (Kokoro/Piper). Enable the TTS
+backend of your choice by uncommenting the relevant lines in
+`servers/voice-server/pyproject.toml` and `server.py`.
+
+---
+
+## Development
+
+Each server is an independent Poetry project. To work on one locally:
+
+```bash
+cd servers/research-server
+poetry install
+poetry run research-server
+```
+
+### Code Quality
+
+```bash
+# From any server directory:
+poetry run black src/
+poetry run isort src/
+poetry run flake8 src/
+poetry run mypy src/
+poetry run pytest
+```
+
+---
+
+## Extending the System
+
+1. **Add a new MCP server** — create `servers/<name>-server/` following the
+   research-server pattern. Expose tools via `@mcp.tool()`.
+2. **Register a new worker agent** — add a factory function in
+   `servers/system-server/src/system_server/orchestrator.py`, create the agent with
+   `llm_config` pointing at Ollama, and register it in the `GroupChat`.
+3. **Swap the LLM** — set `OLLAMA_MODEL` in `.env` to any model tag available
+   on Ollama Hub (e.g. `llama3:70b-instruct`, `mistral`, `qwen2`).
+
+---
 
 ## License
 
-[You can find the license information here](LICENSE)
-
-## Contributing
-
-[Add contribution guidelines here]
-
-## Acknowledgments
-
-- [llama.cpp](https://github.com/ggerganov/llama.cpp) - Fast LLM inference engine
-- [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) - GPU acceleration
-- [Docker](https://www.docker.com/) - Containerization platform
-- [Hugging Face](https://huggingface.co/) - Model hosting and sharing platform
-- [OpenAI API](https://openai.com/api/) - API specification reference
+See [LICENSE](LICENSE).
