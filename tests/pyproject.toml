@@ -9,7 +9,7 @@ packages = []
 python = "~3.12"
 httpx = "^0.28.1"
 rich = "^13.7.0"
-gradio = "^4.36.0"
+gradio = ">=5.0.0,<7.0.0"
 
 [tool.poetry.scripts]
 cli-tester = "cli_tester:main"

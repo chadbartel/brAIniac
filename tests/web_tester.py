@@ -225,9 +225,9 @@ def build_interface(server_url: str) -> gr.Blocks:
 
     def submit(
         user_message: str,
-        history: list[tuple[str, str]],
+        history: list[dict[str, str]],
     ) -> Generator[
-        tuple[list[tuple[str, str]], str, str],
+        tuple[list[dict[str, str]], str, str],
         None,
         None,
     ]:
@@ -235,7 +235,7 @@ def build_interface(server_url: str) -> gr.Blocks:
 
         Args:
             user_message: The typed user prompt.
-            history: Existing chat history tuples of (user, bot).
+            history: Existing chat history in Gradio messages format.
 
         Yields:
             Tuples of (updated_history, thought_log, status).
@@ -244,31 +244,24 @@ def build_interface(server_url: str) -> gr.Blocks:
             yield history, "", "idle"
             return
 
-        # Append user message with empty bot placeholder
-        history = history + [(user_message, "")]
+        # Append user turn then an empty assistant placeholder
+        history = history + [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": ""},
+        ]
 
         for answer, thought_log, status in _stream_events(
             server_url, user_message
         ):
-            # Update the last bot turn in place
-            history[-1] = (user_message, answer)
+            # Update the last assistant turn in place
+            history[-1] = {"role": "assistant", "content": answer}
             yield history, thought_log, status
 
     def check_health() -> str:
         return _health_status(server_url)
 
-    with gr.Blocks(
-        title="brAIniac",
-        theme=gr.themes.Soft(
-            primary_hue="cyan",
-            secondary_hue="emerald",
-            neutral_hue="slate",
-        ),
-        css="""
-            .thought-box textarea { font-family: monospace; font-size: 0.82em; }
-            footer { display: none !important; }
-        """,
-    ) as demo:
+    # theme/css moved to launch() per Gradio 6.0 migration
+    with gr.Blocks(title="brAIniac") as demo:
         gr.Markdown(
             "# 🧠 brAIniac\n"
             "> Local-first AI orchestrator · AutoGen + FastMCP + Ollama"
@@ -285,8 +278,6 @@ def build_interface(server_url: str) -> gr.Blocks:
                 chatbot = gr.Chatbot(
                     label="brAIniac Chat",
                     height=520,
-                    show_copy_button=True,
-                    bubble_full_width=False,
                 )
                 with gr.Row():
                     msg_input = gr.Textbox(
@@ -364,7 +355,15 @@ def main() -> None:
         server_name="0.0.0.0",
         server_port=args.port,
         share=args.share,
-        show_api=False,
+        theme=gr.themes.Soft(
+            primary_hue="cyan",
+            secondary_hue="emerald",
+            neutral_hue="slate",
+        ),
+        css=(
+            ".thought-box textarea { font-family: monospace; font-size: 0.82em; }\n"
+            "footer { display: none !important; }"
+        ),
     )
 
 
