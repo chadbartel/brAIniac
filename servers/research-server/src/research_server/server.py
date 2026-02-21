@@ -35,7 +35,9 @@ logger = logging.getLogger("research-server")
 CHROMA_HOST: str = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT: int = int(os.getenv("CHROMA_PORT", "8000"))
 CHROMA_COLLECTION: str = os.getenv("CHROMA_COLLECTION", "brainiac_memory")
-USE_REMOTE_CHROMA: bool = os.getenv("USE_REMOTE_CHROMA", "false").lower() == "true"
+USE_REMOTE_CHROMA: bool = (
+    os.getenv("USE_REMOTE_CHROMA", "false").lower() == "true"
+)
 MAX_SEARCH_RESULTS: int = int(os.getenv("MAX_SEARCH_RESULTS", "8"))
 
 # ---------------------------------------------------------------------------
@@ -46,7 +48,9 @@ MAX_SEARCH_RESULTS: int = int(os.getenv("MAX_SEARCH_RESULTS", "8"))
 def _build_chroma_client() -> chromadb.ClientAPI:
     """Return a ChromaDB client (remote HTTP or local ephemeral)."""
     if USE_REMOTE_CHROMA:
-        logger.info("Connecting to remote ChromaDB at %s:%s", CHROMA_HOST, CHROMA_PORT)
+        logger.info(
+            "Connecting to remote ChromaDB at %s:%s", CHROMA_HOST, CHROMA_PORT
+        )
         return chromadb.HttpClient(
             host=CHROMA_HOST,
             port=CHROMA_PORT,
@@ -206,9 +210,7 @@ def query_memory(
     ids = results.get("ids", [[]])[0]
 
     for doc_id, doc, meta in zip(ids, docs, metas):
-        entries.append(
-            MemoryEntry(id=doc_id, text=doc, metadata=meta or {})
-        )
+        entries.append(MemoryEntry(id=doc_id, text=doc, metadata=meta or {}))
 
     logger.info("[query_memory] returned %d entries", len(entries))
     return entries

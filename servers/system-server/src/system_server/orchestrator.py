@@ -135,7 +135,9 @@ def _call_research_tool(tool_name: str, **kwargs: Any) -> str:
         response = httpx.post(url, json=kwargs, timeout=30)
         response.raise_for_status()
         result = response.json()
-        logger.info("[mcp-call] tool=%s -> %d bytes", tool_name, len(str(result)))
+        logger.info(
+            "[mcp-call] tool=%s -> %d bytes", tool_name, len(str(result))
+        )
         return json.dumps(result, ensure_ascii=False, indent=2)
     except httpx.HTTPStatusError as exc:
         logger.error(
@@ -144,7 +146,10 @@ def _call_research_tool(tool_name: str, **kwargs: Any) -> str:
         return json.dumps({"error": str(exc)})
     except Exception as exc:
         logger.error(
-            "[mcp-call] Unexpected error for %s: %s", tool_name, exc, exc_info=True
+            "[mcp-call] Unexpected error for %s: %s",
+            tool_name,
+            exc,
+            exc_info=True,
         )
         return json.dumps({"error": str(exc)})
 
@@ -447,9 +452,9 @@ def run_task(
     planning_proxy.initiate_chat(
         planning_agent, message=user_prompt, max_turns=1, silent=True
     )
-    raw_plan = (
-        planning_proxy.last_message(planning_agent) or {}
-    ).get("content", "")
+    raw_plan = (planning_proxy.last_message(planning_agent) or {}).get(
+        "content", ""
+    )
 
     needs_approval, trigger = _requires_human_approval(
         raw_plan, cfg.human_approval_keywords
@@ -491,9 +496,7 @@ def run_task(
 
     # Extract the final answer from the last orchestrator message
     final_messages = [
-        m
-        for m in group_chat.messages
-        if m.get("name") == "OrchestratorAgent"
+        m for m in group_chat.messages if m.get("name") == "OrchestratorAgent"
     ]
     final_answer = (
         final_messages[-1].get("content", "No result produced.")
@@ -531,7 +534,9 @@ def run() -> None:
             continue
         try:
             result = run_task(user_input)
-            console.print(Panel(result, title="brAIniac", border_style="green"))
+            console.print(
+                Panel(result, title="brAIniac", border_style="green")
+            )
         except Exception as exc:
             logger.error("Orchestration error: %s", exc, exc_info=True)
             console.print(f"[bold red]Error:[/bold red] {exc}")

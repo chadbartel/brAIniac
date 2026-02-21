@@ -77,9 +77,7 @@ class TranscriptionResult(BaseModel):
 
 
 class SynthesisResult(BaseModel):
-    audio_b64: str = Field(
-        ..., description="Base64-encoded WAV audio bytes."
-    )
+    audio_b64: str = Field(..., description="Base64-encoded WAV audio bytes.")
     sample_rate: int
 
 
@@ -118,8 +116,7 @@ def transcribe_audio(
             beam_size=5,
         )
         segment_list = [
-            {"start": s.start, "end": s.end, "text": s.text}
-            for s in segments
+            {"start": s.start, "end": s.end, "text": s.text} for s in segments
         ]
         full_text = " ".join(s["text"] for s in segment_list).strip()
         logger.info(

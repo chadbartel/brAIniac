@@ -84,7 +84,7 @@ def _stream_events(
                     if not line.startswith("data:"):
                         continue
 
-                    payload = line[len("data:"):].strip()
+                    payload = line[len("data:") :].strip()
                     try:
                         event: dict[str, Any] = json.loads(payload)
                     except json.JSONDecodeError:
@@ -128,7 +128,11 @@ def _stream_events(
                         thought_lines.append(
                             f"\n> ⚙️ **Tool call** `{tool_name}` "
                             f"by **{agent}**"
-                            + (f"\n> ```json\n> {tool_args[:400]}\n> ```" if tool_args else "")
+                            + (
+                                f"\n> ```json\n> {tool_args[:400]}\n> ```"
+                                if tool_args
+                                else ""
+                            )
                         )
                     else:
                         icon = _icon(agent)
@@ -163,7 +167,23 @@ def _escape_md(text: str) -> str:
     Returns:
         Escaped string safe to embed inside Markdown paragraphs.
     """
-    for ch in ("\\", "`", "*", "_", "{", "}", "[", "]", "(", ")", "#", "+", "-", ".", "!"):
+    for ch in (
+        "\\",
+        "`",
+        "*",
+        "_",
+        "{",
+        "}",
+        "[",
+        "]",
+        "(",
+        ")",
+        "#",
+        "+",
+        "-",
+        ".",
+        "!",
+    ):
         text = text.replace(ch, f"\\{ch}")
     return text
 
@@ -227,7 +247,9 @@ def build_interface(server_url: str) -> gr.Blocks:
         # Append user message with empty bot placeholder
         history = history + [(user_message, "")]
 
-        for answer, thought_log, status in _stream_events(server_url, user_message):
+        for answer, thought_log, status in _stream_events(
+            server_url, user_message
+        ):
             # Update the last bot turn in place
             history[-1] = (user_message, answer)
             yield history, thought_log, status

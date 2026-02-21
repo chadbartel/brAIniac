@@ -36,7 +36,9 @@ logger = logging.getLogger("system-server.api")
 # ---------------------------------------------------------------------------
 # Thread pool for running the synchronous orchestrator
 # ---------------------------------------------------------------------------
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="orchestrator")
+_executor = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="orchestrator"
+)
 
 # ---------------------------------------------------------------------------
 # FastAPI app

@@ -152,7 +152,7 @@ def stream_prompt(base_url: str, prompt: str) -> None:
                         # "event: done" — stream finished
                         break
                     if line.startswith("data:"):
-                        payload = line[len("data:"):].strip()
+                        payload = line[len("data:") :].strip()
                         try:
                             event = json.loads(payload)
                             _render_event(event)
@@ -168,7 +168,9 @@ def stream_prompt(base_url: str, prompt: str) -> None:
             )
             sys.exit(1)
         except httpx.HTTPStatusError as exc:
-            console.print(f"[bold red]HTTP {exc.response.status_code}:[/bold red] {exc}")
+            console.print(
+                f"[bold red]HTTP {exc.response.status_code}:[/bold red] {exc}"
+            )
             sys.exit(1)
 
 
@@ -221,7 +223,9 @@ def main() -> None:
 
     # Health check
     if check_health(base_url):
-        console.print("[bold green]✓[/bold green] System server is reachable.\n")
+        console.print(
+            "[bold green]✓[/bold green] System server is reachable.\n"
+        )
     else:
         console.print(
             f"[bold yellow]⚠[/bold yellow] System server not responding at "
