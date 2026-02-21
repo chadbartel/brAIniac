@@ -6,7 +6,7 @@ authors = ["brAIniac Contributors"]
 packages = [{ include = "voice_server", from = "src" }]
 
 [tool.poetry.dependencies]
-python = "^3.12"
+python = "~3.12"
 fastmcp = "^2.0.0"
 faster-whisper = "^1.0.0"
 # kokoro-tts or piper-tts — uncomment the one you prefer:

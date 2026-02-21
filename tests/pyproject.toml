@@ -6,7 +6,7 @@ authors = ["brAIniac Contributors"]
 packages = []
 
 [tool.poetry.dependencies]
-python = "^3.12"
+python = "~3.12"
 httpx = "^0.28.1"
 rich = "^13.7.0"
 gradio = "^4.36.0"
