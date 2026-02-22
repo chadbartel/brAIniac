@@ -55,13 +55,16 @@ services:
       timeout: 10s
       retries: 10
       start_period: 300s   # llama3.2:3b pull can take several minutes
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # GPU acceleration (optional) — uncomment if nvidia-container-toolkit
+    # is installed and `docker run --gpus all nvidia/cuda:12.0-base nvidia-smi`
+    # succeeds.  Ollama runs on CPU if GPU resources are not available.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
     logging: *default-logging
 
   # ---------------------------------------------------------------------------
