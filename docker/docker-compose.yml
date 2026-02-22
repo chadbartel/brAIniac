@@ -24,7 +24,7 @@ services:
   # Ollama — local LLM inference
   # ---------------------------------------------------------------------------
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.16.3
     container_name: brainiac-ollama
     restart: unless-stopped
     ports:
@@ -68,7 +68,10 @@ services:
   # ChromaDB — vector memory backend for research-server
   # ---------------------------------------------------------------------------
   chromadb:
-    image: chromadb/chroma:1.0.0   # pinned — must match Python client version in research-server (chromadb ^1.2.0)
+    # chromadb/chroma:1.0.0 is a Rust binary image — no Python, wget, or curl.
+    # Python client chromadb ^1.2.0 (resolved 1.2.1) uses the v2 API which is
+    # present in server 1.0.0.  Pin together and update both when upgrading.
+    image: chromadb/chroma:1.0.0
     container_name: brainiac-chromadb
     restart: unless-stopped
     ports:
@@ -79,9 +82,12 @@ services:
       IS_PERSISTENT: "TRUE"
       ANONYMIZED_TELEMETRY: "FALSE"
     healthcheck:
+      # bash /dev/tcp is a built-in TCP probe — no external tools required.
+      # Opens a connection to port 8000; exits 0 if the server is accepting
+      # connections, non-zero otherwise.
       test:
         - "CMD-SHELL"
-        - "python -c \"import socket; s=socket.create_connection(('localhost',8000),timeout=3); s.close()\""
+        - "bash -c 'exec 3<>/dev/tcp/localhost/8000'"
       interval: 15s
       timeout: 5s
       retries: 5
@@ -189,7 +195,7 @@ services:
   # Tailscale — secure remote access sidecar
   # ---------------------------------------------------------------------------
   tailscale:
-    image: tailscale/tailscale:latest
+    image: tailscale/tailscale:v1.94
     container_name: brainiac-tailscale
     hostname: brainiac
     restart: unless-stopped

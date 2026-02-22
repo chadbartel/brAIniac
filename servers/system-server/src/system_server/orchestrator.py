@@ -7,8 +7,17 @@ Architecture:
   - Layer 1: ToolRouter (small, fast model — e.g. llama3.2:3b)
       Analyses the user prompt and conversation history.
       Outputs a single structured JSON routing decision:
-          {"tools_needed": ["search_web"], "queries": ["..."]}
-      Does NOT generate prose.  It is a pure routing controller.
+          {"required_collections": [], "web_search_needed": false, "query": ""}
+      Does NOT generate prose.  It is a pure intent classifier + routing controller.
+
+      Mode determination from router output:
+        CHAT mode     — web_search_needed=False AND required_collections=[].
+                        Skips Semantic Gap check, VDB query, and web search entirely.
+                        Fast path directly to the Generator.
+        RESEARCH mode — web_search_needed=True OR required_collections non-empty.
+                        Runs Semantic Gap check; uses VDB context if coverage is
+                        sufficient, otherwise executes live web search and delegates
+                        results to the LibrarianAgent for VDB persistence.
 
   - Layer 2: Generator (larger model — e.g. dolphin-llama3)
       If tools were invoked, their results are injected into the final
@@ -975,82 +984,117 @@ def run_task(
     # -----------------------------------------------------------------------
     # Step 3 — Semantic Gap check + tool execution + Librarian delegation
     #
-    # Flow:
-    #   a. Query Master Registry to measure VDB coverage.
-    #   b. If required_collections were identified and gap < threshold:
-    #      inject VDB results as additional context (no web search needed).
-    #   c. If gap detected (or router requested web search): run web search.
-    #   d. After web search: delegate results to LibrarianAgent for storage.
+    # Mode determination (derived from Layer 1 router decision):
+    #   CHAT mode   — router returned web_search_needed=False AND
+    #                 required_collections=[].  No VDB or web tooling is
+    #                 needed; skip the Semantic Gap check entirely and go
+    #                 straight to the Generator.
+    #   RESEARCH mode — router flagged web_search_needed=True OR named at
+    #                 least one VDB collection.  Run the Semantic Gap check
+    #                 to decide whether VDB coverage is sufficient or a live
+    #                 web search is required.
+    #
+    # The ToolRouter IS the intent classifier.  The Semantic Gap check must
+    # only run once the router has already decided research *could* be
+    # relevant — running it unconditionally for every query (including
+    # greetings) allows a 0.0 similarity score to override the router's
+    # legitimate "no tools needed" decision.
     # -----------------------------------------------------------------------
     tool_outputs: list[dict[str, Any]] = []
 
-    # Always run the Semantic Gap check so we know current VDB coverage.
-    search_query: str = router_result.query or user_prompt
-    gap_check: dict[str, Any] = _check_semantic_gap(search_query)
-    has_gap: bool = bool(gap_check.get("has_gap", True))
-    max_sim: float = float(gap_check.get("max_similarity", 0.0))
-    _emit(
-        on_message,
-        agent="Librarian",
-        recipient="Orchestrator",
-        content=(
-            f"[SemanticGap] max_similarity={max_sim:.4f} "
-            f"has_gap={has_gap}  "
-            f"threshold={gap_check.get('semantic_gap_threshold', 0.85)}"
-        ),
-        event_type="message",
+    # Derive execution mode from the router's structured output.
+    needs_research: bool = router_result.web_search_needed or bool(
+        router_result.required_collections
     )
+    search_query: str = router_result.query or user_prompt
 
-    # If the VDB has adequate coverage, retrieve context from it directly.
-    vdb_collections: list[dict[str, Any]] = gap_check.get("collections", [])
-    if not has_gap and vdb_collections:
+    if not needs_research:
+        # ------------------------------------------------------------------
+        # CHAT mode — router says no tools needed.  Skip all research
+        # pipeline stages (Semantic Gap, web search, Librarian delegation).
+        # ------------------------------------------------------------------
         logger.info(
-            "[orchestrator] VDB context sufficient (max_similarity=%.4f) "
-            "— skipping web search.",
-            max_sim,
+            "[orchestrator] CHAT mode — router returned no tools needed; "
+            "skipping Semantic Gap check and web search."
         )
+        gap_check: dict[str, Any] = {
+            "max_similarity": 1.0,
+            "has_gap": False,
+            "collections": [],
+        }
+        has_gap: bool = False
+
+    else:
+        # ------------------------------------------------------------------
+        # RESEARCH mode — run Semantic Gap check to decide VDB vs web search.
+        # ------------------------------------------------------------------
+        gap_check = _check_semantic_gap(search_query)
+        has_gap = bool(gap_check.get("has_gap", True))
+        max_sim: float = float(gap_check.get("max_similarity", 0.0))
         _emit(
             on_message,
             agent="Librarian",
             recipient="Orchestrator",
             content=(
-                f"[VDB Hit] Answering from memory "
-                f"(collections: {[c['collection_name'] for c in vdb_collections]})"
+                f"[SemanticGap] max_similarity={max_sim:.4f} "
+                f"has_gap={has_gap}  "
+                f"threshold={gap_check.get('semantic_gap_threshold', 0.85)}"
             ),
-            event_type="function_call",
+            event_type="message",
         )
 
-    # Web search: triggered when router requested it OR a Semantic Gap exists.
-    if router_result.web_search_needed or has_gap:
-        if not search_query:
-            logger.warning("[orchestrator] web search flagged but query is empty — skipping")
-        else:
-            tool_outputs = _execute_web_search(search_query)
-            for entry in tool_outputs:
-                _emit(
-                    on_message,
-                    agent=entry["tool"],
-                    recipient="Orchestrator",
-                    content=(
-                        f"[{entry['tool']}] query={entry['query']!r} "
-                        f"({len(entry['result'])} chars returned)"
-                    ),
-                    event_type="function_call",
+        # If the VDB has adequate coverage, retrieve context from it directly.
+        vdb_collections: list[dict[str, Any]] = gap_check.get("collections", [])
+        if not has_gap and vdb_collections:
+            logger.info(
+                "[orchestrator] VDB context sufficient (max_similarity=%.4f) "
+                "— skipping web search.",
+                max_sim,
+            )
+            _emit(
+                on_message,
+                agent="Librarian",
+                recipient="Orchestrator",
+                content=(
+                    f"[VDB Hit] Answering from memory "
+                    f"(collections: {[c['collection_name'] for c in vdb_collections]})"
+                ),
+                event_type="function_call",
+            )
+
+        # Web search: triggered when router requested it OR a Semantic Gap exists.
+        if router_result.web_search_needed or has_gap:
+            if not search_query:
+                logger.warning(
+                    "[orchestrator] web search flagged but query is empty — skipping"
                 )
-            # Delegate results to the LibrarianAgent for VDB persistence.
-            if tool_outputs:
-                _emit(
-                    on_message,
-                    agent="Librarian",
-                    recipient="Orchestrator",
-                    content="[Librarian] Persisting research results to VDB...",
-                    event_type="message",
-                )
-                _delegate_to_librarian(
-                    tool_outputs[0]["result"],
-                    search_query,
-                    gap_check,
-                )
+            else:
+                tool_outputs = _execute_web_search(search_query)
+                for entry in tool_outputs:
+                    _emit(
+                        on_message,
+                        agent=entry["tool"],
+                        recipient="Orchestrator",
+                        content=(
+                            f"[{entry['tool']}] query={entry['query']!r} "
+                            f"({len(entry['result'])} chars returned)"
+                        ),
+                        event_type="function_call",
+                    )
+                # Delegate results to the LibrarianAgent for VDB persistence.
+                if tool_outputs:
+                    _emit(
+                        on_message,
+                        agent="Librarian",
+                        recipient="Orchestrator",
+                        content="[Librarian] Persisting research results to VDB...",
+                        event_type="message",
+                    )
+                    _delegate_to_librarian(
+                        tool_outputs[0]["result"],
+                        search_query,
+                        gap_check,
+                    )
 
     # -----------------------------------------------------------------------
     # Step 4 — Layer 2: Generator

@@ -364,6 +364,10 @@ def query_master_registry(
 
 @mcp.tool()
 def create_collection(
+    summary: str = Field(
+        ...,
+        description="One-sentence topic summary stored in the Master Registry.",
+    ),
     name: str = Field(
         "",
         description=(
@@ -371,10 +375,6 @@ def create_collection(
             "A short UUID suffix is appended automatically. "
             "Leave blank to auto-generate from the summary."
         ),
-    ),
-    summary: str = Field(
-        ...,
-        description="One-sentence topic summary stored in the Master Registry.",
     ),
     documents: list[dict[str, Any]] = Field(
         default_factory=list,
