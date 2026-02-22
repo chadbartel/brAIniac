@@ -29,15 +29,19 @@ from rich.text import Text
 from rich.theme import Theme
 
 # ---------------------------------------------------------------------------
-# Colour scheme — each agent gets a distinct colour
+# Colour scheme — each pipeline stage gets a distinct colour
 # ---------------------------------------------------------------------------
 AGENT_COLOURS: dict[str, str] = {
+    # Layer 1 — tool router (small model)
+    "ToolRouter": "bold yellow",
+    # Tool execution stage (individual tool names also use this)
+    "search_web": "bold magenta",
+    "store_memory": "bold magenta",
+    "query_memory": "bold magenta",
+    # Layer 2 — generator (large model)
+    "Generator": "bold green",
+    # Final synthesised answer emitted under the legacy agent name
     "OrchestratorAgent": "bold cyan",
-    "ResearchAgent": "bold green",
-    "HumanProxy": "bold yellow",
-    "GroupChatManager": "dim white",
-    "_PlanningProbe": "dim magenta",
-    "_PlanningProxy": "dim magenta",
 }
 TOOL_COLOUR = "bold magenta"
 ANSWER_COLOUR = "bold white on dark_green"
@@ -130,19 +134,32 @@ def _render_event(event: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def stream_prompt(base_url: str, prompt: str) -> None:
+def stream_prompt(
+    base_url: str,
+    prompt: str,
+    router_model: str | None = None,
+    generator_model: str | None = None,
+) -> None:
     """Send a prompt to the system-server and stream the response.
 
     Args:
         base_url: Base URL of the system-server (e.g. http://localhost:8300).
         prompt: User task prompt.
+        router_model: Optional Layer 1 router model override.
+        generator_model: Optional Layer 2 generator model override.
     """
     url = f"{base_url.rstrip('/')}/run/stream"
     console.print(Rule("[dim]Starting orchestration[/dim]", style="cyan"))
 
+    payload: dict[str, Any] = {"prompt": prompt}
+    if router_model:
+        payload["router_model"] = router_model
+    if generator_model:
+        payload["generator_model"] = generator_model
+
     with httpx.Client(timeout=None) as client:
         try:
-            with client.stream("POST", url, json={"prompt": prompt}) as resp:
+            with client.stream("POST", url, json=payload) as resp:
                 resp.raise_for_status()
                 for raw_line in resp.iter_lines():
                     line = raw_line.strip()
@@ -208,14 +225,34 @@ def main() -> None:
         default="http://localhost:8300",
         help="Base URL of the system-server (default: http://localhost:8300)",
     )
+    parser.add_argument(
+        "--router-model",
+        default=None,
+        metavar="MODEL",
+        help="Override the Layer 1 router model (e.g. 'llama3.2:3b').",
+    )
+    parser.add_argument(
+        "--generator-model",
+        default=None,
+        metavar="MODEL",
+        help="Override the Layer 2 generator model (e.g. 'dolphin-llama3').",
+    )
     args = parser.parse_args()
     base_url: str = args.url
+
+    model_info: list[str] = []
+    if args.router_model:
+        model_info.append(f"Router: {args.router_model}")
+    if args.generator_model:
+        model_info.append(f"Generator: {args.generator_model}")
+    model_line = ("  " + "  |  ".join(model_info)) if model_info else ""
 
     console.print(
         Panel(
             "[bold cyan]brAIniac CLI Tester[/bold cyan]\n"
-            f"[dim]Connecting to: {base_url}[/dim]\n"
-            "[dim]Type 'exit' or Ctrl-C to quit.[/dim]",
+            f"[dim]Connecting to: {base_url}[/dim]"
+            + (f"\n[dim]{model_line}[/dim]" if model_line else "")
+            + "\n[dim]Type 'exit' or Ctrl-C to quit.[/dim]",
             border_style="cyan",
             padding=(1, 2),
         )
@@ -245,7 +282,12 @@ def main() -> None:
             console.print("[dim]Goodbye.[/dim]")
             break
 
-        stream_prompt(base_url, user_input)
+        stream_prompt(
+            base_url,
+            user_input,
+            router_model=args.router_model,
+            generator_model=args.generator_model,
+        )
 
 
 if __name__ == "__main__":

@@ -28,13 +28,19 @@ import httpx
 DEFAULT_SERVER_URL = "http://localhost:8300"
 
 # ---------------------------------------------------------------------------
-# Agent colour map (Gradio Markdown styling via emoji prefix)
+# Agent icon map — one emoji per pipeline stage
 # ---------------------------------------------------------------------------
 AGENT_ICONS: dict[str, str] = {
+    # Layer 1 — tool router
+    "ToolRouter": "🚦",
+    # Individual tool names appear as the agent when a tool fires
+    "search_web": "🔍",
+    "store_memory": "💾",
+    "query_memory": "🧠",
+    # Layer 2 — generator
+    "Generator": "✨",
+    # Final answer emitted under the legacy orchestrator name
     "OrchestratorAgent": "🧠",
-    "ResearchAgent": "🔍",
-    "HumanProxy": "👤",
-    "GroupChatManager": "📋",
 }
 DEFAULT_ICON = "🤖"
 
@@ -52,6 +58,8 @@ def _stream_events(
     server_url: str,
     prompt: str,
     history: list[dict[str, str]] | None = None,
+    router_model: str | None = None,
+    generator_model: str | None = None,
 ) -> Generator[tuple[str, str, str], None, None]:
     """Connect to /run/stream and yield (chat_message, thought_log, status).
 
@@ -65,6 +73,8 @@ def _stream_events(
         prompt: The current user prompt.
         history: Prior conversation turns to provide context to the
             orchestrator. Each turn is a dict with ``role`` and ``content``.
+        router_model: Optional Layer 1 router model override.
+        generator_model: Optional Layer 2 generator model override.
     """
     url = f"{server_url.rstrip('/')}/run/stream"
     thought_lines: list[str] = []
@@ -76,6 +86,10 @@ def _stream_events(
         payload: dict[str, Any] = {"prompt": prompt}
         if history:
             payload["history"] = history
+        if router_model:
+            payload["router_model"] = router_model
+        if generator_model:
+            payload["generator_model"] = generator_model
 
         with httpx.Client(timeout=None) as client:
             with client.stream("POST", url, json=payload) as resp:
@@ -221,11 +235,13 @@ def _health_status(server_url: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_interface(server_url: str) -> gr.Blocks:
+def build_interface(server_url: str, router_model: str | None = None, generator_model: str | None = None) -> gr.Blocks:
     """Construct and return the Gradio Blocks application.
 
     Args:
         server_url: Base URL of the system-server to target.
+        router_model: Default Layer 1 router model (shown in Advanced panel).
+        generator_model: Default Layer 2 generator model (shown in Advanced panel).
 
     Returns:
         A configured ``gr.Blocks`` instance (not yet launched).
@@ -234,6 +250,8 @@ def build_interface(server_url: str) -> gr.Blocks:
     def submit(
         user_message: str,
         history: list[dict[str, str]],
+        router_model_val: str,
+        generator_model_val: str,
     ) -> Generator[
         tuple[list[dict[str, str]], str, str],
         None,
@@ -244,6 +262,8 @@ def build_interface(server_url: str) -> gr.Blocks:
         Args:
             user_message: The typed user prompt.
             history: Existing chat history in Gradio messages format.
+            router_model_val: Layer 1 model override from the UI (empty = default).
+            generator_model_val: Layer 2 model override from the UI (empty = default).
 
         Yields:
             Tuples of (updated_history, thought_log, status).
@@ -269,7 +289,11 @@ def build_interface(server_url: str) -> gr.Blocks:
         ]
 
         for answer, thought_log, status in _stream_events(
-            server_url, user_message, history=prior_history if prior_history else None
+            server_url,
+            user_message,
+            history=prior_history if prior_history else None,
+            router_model=router_model_val.strip() or router_model or None,
+            generator_model=generator_model_val.strip() or generator_model or None,
         ):
             # Update the last assistant turn in place
             history[-1] = {"role": "assistant", "content": answer}
@@ -282,7 +306,7 @@ def build_interface(server_url: str) -> gr.Blocks:
     with gr.Blocks(title="brAIniac") as demo:
         gr.Markdown(
             "# 🧠 brAIniac\n"
-            "> Local-first AI orchestrator · AutoGen + FastMCP + Ollama"
+            "> Local-first AI · Two-layer heterogeneous orchestration · FastMCP + Ollama"
         )
 
         with gr.Row():
@@ -307,6 +331,18 @@ def build_interface(server_url: str) -> gr.Blocks:
                     )
                     clear_btn = gr.Button("🗑 Clear", scale=0, size="sm")
 
+                with gr.Accordion("\u2699️ Advanced: Model Overrides", open=False):
+                    router_input = gr.Textbox(
+                        label="Layer 1 — Router model",
+                        placeholder=f"default: {router_model or 'OLLAMA_MODEL_ROUTER'}",
+                        value=router_model or "",
+                    )
+                    generator_input = gr.Textbox(
+                        label="Layer 2 — Generator model",
+                        placeholder=f"default: {generator_model or 'OLLAMA_MODEL_GENERATOR'}",
+                        value=generator_model or "",
+                    )
+
             with gr.Column(scale=2):
                 status_badge = gr.Markdown("**Status:** idle")
                 with gr.Accordion("🔍 Thought Process", open=False):
@@ -318,7 +354,7 @@ def build_interface(server_url: str) -> gr.Blocks:
         # Wire events
         msg_input.submit(
             fn=submit,
-            inputs=[msg_input, chatbot],
+            inputs=[msg_input, chatbot, router_input, generator_input],
             outputs=[chatbot, thought_box, status_badge],
         ).then(
             fn=lambda: "",
@@ -366,9 +402,25 @@ def main() -> None:
         action="store_true",
         help="Create a public Gradio share link.",
     )
+    parser.add_argument(
+        "--router-model",
+        default=None,
+        metavar="MODEL",
+        help="Default Layer 1 router model (pre-fills the Advanced panel).",
+    )
+    parser.add_argument(
+        "--generator-model",
+        default=None,
+        metavar="MODEL",
+        help="Default Layer 2 generator model (pre-fills the Advanced panel).",
+    )
     args = parser.parse_args()
 
-    demo = build_interface(server_url=args.url)
+    demo = build_interface(
+        server_url=args.url,
+        router_model=args.router_model,
+        generator_model=args.generator_model,
+    )
     demo.launch(
         server_name="0.0.0.0",
         server_port=args.port,
