@@ -65,8 +65,7 @@ def _get_whisper() -> WhisperModel:
 # ---------------------------------------------------------------------------
 mcp: FastMCP = FastMCP(
     name="brainiac-voice-server",
-    version="0.1.0",
-    description="STT (faster-whisper) and TTS (Kokoro/Piper) MCP server.",
+    instructions="STT (faster-whisper) and TTS (Kokoro/Piper) MCP server.",
 )
 
 

@@ -49,7 +49,9 @@ def _icon(agent: str) -> str:
 
 
 def _stream_events(
-    server_url: str, prompt: str
+    server_url: str,
+    prompt: str,
+    history: list[dict[str, str]] | None = None,
 ) -> Generator[tuple[str, str, str], None, None]:
     """Connect to /run/stream and yield (chat_message, thought_log, status).
 
@@ -60,7 +62,9 @@ def _stream_events(
 
     Args:
         server_url: Base URL of the system-server.
-        prompt: The user task prompt.
+        prompt: The current user prompt.
+        history: Prior conversation turns to provide context to the
+            orchestrator. Each turn is a dict with ``role`` and ``content``.
     """
     url = f"{server_url.rstrip('/')}/run/stream"
     thought_lines: list[str] = []
@@ -69,8 +73,12 @@ def _stream_events(
     yield answer_text, "_Connecting to orchestrator…_", "connecting"
 
     try:
+        payload: dict[str, Any] = {"prompt": prompt}
+        if history:
+            payload["history"] = history
+
         with httpx.Client(timeout=None) as client:
-            with client.stream("POST", url, json={"prompt": prompt}) as resp:
+            with client.stream("POST", url, json=payload) as resp:
                 resp.raise_for_status()
 
                 yield answer_text, "_Orchestration started._\n\n---\n", "running"
@@ -244,6 +252,16 @@ def build_interface(server_url: str) -> gr.Blocks:
             yield history, "", "idle"
             return
 
+        # Capture prior turns BEFORE appending the new exchange.
+        # Strip to only role+content — Gradio 6 injects extra keys (e.g.
+        # `metadata`) with non-string values that fail the server's
+        # dict[str, str] validation and produce a 422.
+        prior_history: list[dict[str, str]] = [
+            {"role": t["role"], "content": t.get("content") or ""}
+            for t in history
+            if t.get("role") and t.get("content")
+        ]
+
         # Append user turn then an empty assistant placeholder
         history = history + [
             {"role": "user", "content": user_message},
@@ -251,7 +269,7 @@ def build_interface(server_url: str) -> gr.Blocks:
         ]
 
         for answer, thought_log, status in _stream_events(
-            server_url, user_message
+            server_url, user_message, history=prior_history if prior_history else None
         ):
             # Update the last assistant turn in place
             history[-1] = {"role": "assistant", "content": answer}

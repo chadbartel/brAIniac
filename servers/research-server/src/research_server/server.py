@@ -73,8 +73,7 @@ _collection: chromadb.Collection = _chroma.get_or_create_collection(
 # ---------------------------------------------------------------------------
 mcp: FastMCP = FastMCP(
     name="brainiac-research-server",
-    version="0.1.0",
-    description=(
+    instructions=(
         "Provides dynamic web search via DuckDuckGo and "
         "persistent vector memory via ChromaDB."
     ),

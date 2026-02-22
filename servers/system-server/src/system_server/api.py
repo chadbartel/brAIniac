@@ -66,6 +66,15 @@ app.add_middleware(
 
 class RunRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="The user task prompt.")
+    history: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Prior conversation turns as a list of "
+            '{"role": "user"|"assistant", "content": "..."}'
+            " dicts. Used to preserve context across multi-turn exchanges."
+            " Extra keys (e.g. Gradio metadata) are accepted and ignored."
+        ),
+    )
 
 
 class MessageEvent(BaseModel):
@@ -112,7 +121,10 @@ async def run(body: RunRequest) -> RunResponse:
 
     loop = asyncio.get_event_loop()
     answer: str = await loop.run_in_executor(
-        _executor, lambda: run_task(body.prompt, on_message=_on_message)
+        _executor,
+        lambda: run_task(
+            body.prompt, on_message=_on_message, history=body.history
+        ),
     )
     return RunResponse(answer=answer, messages=collected)
 
@@ -143,7 +155,9 @@ async def run_stream(body: RunRequest) -> StreamingResponse:
 
     def _run_in_thread() -> None:
         try:
-            answer = run_task(body.prompt, on_message=_on_message)
+            answer = run_task(
+                body.prompt, on_message=_on_message, history=body.history
+            )
             msg_queue.put({"type": "answer", "content": answer})
         except Exception as exc:
             logger.error("Streaming task error: %s", exc, exc_info=True)

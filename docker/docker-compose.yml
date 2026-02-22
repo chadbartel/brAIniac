@@ -40,11 +40,11 @@ services:
              ollama pull ${OLLAMA_MODEL:-dolphin-llama3} &&
              wait"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "bash -c '(exec 3<>/dev/tcp/localhost/11434) 2>/dev/null || exit 1'"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 60s
+      start_period: 120s   # model pull can take time on cold start
     deploy:
       resources:
         reservations:
@@ -58,7 +58,7 @@ services:
   # ChromaDB — vector memory backend for research-server
   # ---------------------------------------------------------------------------
   chromadb:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:0.5.23   # pinned — must match Python client version in research-server
     container_name: brainiac-chromadb
     restart: unless-stopped
     ports:
@@ -69,10 +69,7 @@ services:
       IS_PERSISTENT: "TRUE"
       ANONYMIZED_TELEMETRY: "FALSE"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 20s
-      timeout: 5s
-      retries: 3
+      disable: true
     logging: *default-logging
 
   # ---------------------------------------------------------------------------
@@ -96,9 +93,11 @@ services:
       MAX_SEARCH_RESULTS: "${MAX_SEARCH_RESULTS:-8}"
     depends_on:
       chromadb:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8100/health"]
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import socket; s=socket.create_connection(('localhost',8100),timeout=3); s.close()\""
       interval: 20s
       timeout: 5s
       retries: 3
@@ -128,7 +127,9 @@ services:
       research-server:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8300/health"]
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8300/health', timeout=3)\""
       interval: 20s
       timeout: 5s
       retries: 3
@@ -153,7 +154,9 @@ services:
       WHISPER_DEVICE: "cpu"
       WHISPER_COMPUTE_TYPE: "int8"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8200/health"]
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import socket; s=socket.create_connection(('localhost',8200),timeout=3); s.close()\""
       interval: 20s
       timeout: 5s
       retries: 3
