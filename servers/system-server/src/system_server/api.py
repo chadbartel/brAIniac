@@ -75,6 +75,20 @@ class RunRequest(BaseModel):
             " Extra keys (e.g. Gradio metadata) are accepted and ignored."
         ),
     )
+    router_model: str | None = Field(
+        default=None,
+        description=(
+            "Override the Layer 1 router model for this request. "
+            "Defaults to OLLAMA_MODEL_ROUTER (e.g. 'llama3.2:3b')."
+        ),
+    )
+    generator_model: str | None = Field(
+        default=None,
+        description=(
+            "Override the Layer 2 generator model for this request. "
+            "Defaults to OLLAMA_MODEL_GENERATOR (e.g. 'dolphin-llama3')."
+        ),
+    )
 
 
 class MessageEvent(BaseModel):
@@ -123,7 +137,11 @@ async def run(body: RunRequest) -> RunResponse:
     answer: str = await loop.run_in_executor(
         _executor,
         lambda: run_task(
-            body.prompt, on_message=_on_message, history=body.history
+            body.prompt,
+            on_message=_on_message,
+            history=body.history,
+            router_model=body.router_model,
+            generator_model=body.generator_model,
         ),
     )
     return RunResponse(answer=answer, messages=collected)
@@ -156,7 +174,11 @@ async def run_stream(body: RunRequest) -> StreamingResponse:
     def _run_in_thread() -> None:
         try:
             answer = run_task(
-                body.prompt, on_message=_on_message, history=body.history
+                body.prompt,
+                on_message=_on_message,
+                history=body.history,
+                router_model=body.router_model,
+                generator_model=body.generator_model,
             )
             msg_queue.put({"type": "answer", "content": answer})
         except Exception as exc:
