@@ -38,6 +38,12 @@ AGENT_COLOURS: dict[str, str] = {
     "search_web": "bold magenta",
     "store_memory": "bold magenta",
     "query_memory": "bold magenta",
+    # LibrarianAgent — Master Registry + VDB lifecycle management
+    "Librarian": "bold blue",
+    "get_library_card": "bold blue",
+    "query_master_registry": "bold blue",
+    "create_collection": "bold blue",
+    "update_collection": "bold blue",
     # Layer 2 — generator (large model)
     "Generator": "bold green",
     # Final synthesised answer emitted under the legacy agent name

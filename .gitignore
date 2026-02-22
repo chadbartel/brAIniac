@@ -1,6 +1,12 @@
 # Created by https://www.toptal.com/developers/gitignore/api/python,visualstudiocode,virtualenv
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,visualstudiocode,virtualenv
 
+### Project-specific ###
+# Local GGUF model weights — large files, should not be committed to git.
+# Download models separately via Ollama or place them in a path excluded here.
+*.gguf
+models/
+
 ### Python ###
 # Byte-compiled / optimized / DLL files
 __pycache__/

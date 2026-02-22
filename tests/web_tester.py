@@ -37,6 +37,12 @@ AGENT_ICONS: dict[str, str] = {
     "search_web": "🔍",
     "store_memory": "💾",
     "query_memory": "🧠",
+    # LibrarianAgent — Master Registry + VDB lifecycle management
+    "Librarian": "📚",
+    "get_library_card": "🗂️",
+    "query_master_registry": "🔎",
+    "create_collection": "🆕",
+    "update_collection": "✏️",
     # Layer 2 — generator
     "Generator": "✨",
     # Final answer emitted under the legacy orchestrator name
