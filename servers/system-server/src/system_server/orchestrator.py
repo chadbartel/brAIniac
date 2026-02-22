@@ -301,31 +301,53 @@ def _requires_human_approval(
 # Layer 1 — Tool Router
 # ---------------------------------------------------------------------------
 
-# Whitelist of tool names the router is permitted to request.
-# Only search_web is available — it runs in-process via DDGS.
-# store_memory / query_memory are reserved for future agent-native
-# function-calling when model quality improves; they cannot be reached
-# via a simple HTTP call today (research-server is SSE/MCP only).
-_KNOWN_TOOLS: frozenset[str] = frozenset({"search_web"})
+# ---------------------------------------------------------------------------
+# Router prompt builder — injects the live Library Card for Recursive Routing
+# ---------------------------------------------------------------------------
 
-_ROUTER_SYSTEM_PROMPT: str = (
-    "You are a tool-routing controller. Your ONLY job is to decide whether "
-    "a web search is needed to answer the user's message. "
-    "Do NOT answer the question yourself.\n\n"
-    "Output EXACTLY one JSON object and nothing else — no prose, no markdown, "
-    "no code fences. The object MUST conform to this schema:\n\n"
-    '{"tools_needed": ["search_web"], "queries": ["<search query>"]}\n\n'
-    "Rules:\n"
-    "- Output {\"tools_needed\": [], \"queries\": []} for ANY of these — "
-    "greetings, maths, code analysis, code generation, grammar, creative writing, "
-    "opinions, debugging, explaining concepts, or anything answerable from "
-    "general knowledge.\n"
-    '- Include "search_web" ONLY when the answer requires current events, '
-    "live prices, sports scores, recent news, today's weather, or anything "
-    "that changes day-to-day and cannot be known without a live lookup.\n"
-    "- queries must have exactly one entry per tool in tools_needed.\n"
-    '- If no tools are needed: {"tools_needed": [], "queries": []}'
+_ROUTER_SCHEMA_DESCRIPTION: str = (
+    '{"required_collections": ["<name>"], "web_search_needed": true|false, "query": "<string>"}'
 )
+
+
+def _build_router_prompt(library_card_json: str = "[]") -> str:
+    """Build the Layer 1 router system prompt, injecting the live Library Card.
+
+    The Library Card is a JSON list of existing VDB collections (name + summary)
+    fetched from the research-server's Master Registry at the start of each
+    run_task() call.  The router uses it to choose which existing collections
+    are relevant before deciding whether live web search is also needed.
+
+    Args:
+        library_card_json: JSON string of collection descriptors.  Defaults to
+            an empty list (no VDB context available yet).
+
+    Returns:
+        The complete system prompt string for the router model.
+    """
+    return (
+        "You are a tool-routing controller. "
+        "Your ONLY job is to analyse the user's message and output a routing "
+        "decision.  Do NOT answer the question yourself.\n\n"
+        "Output EXACTLY one JSON object and nothing else — no prose, no markdown, "
+        "no code fences. The object MUST conform to this schema:\n\n"
+        f"{_ROUTER_SCHEMA_DESCRIPTION}\n\n"
+        "Field rules:\n"
+        "  required_collections  — list of collection names from the Library Card "
+        "(below) that are directly relevant to the question.  Use [] if none match.\n"
+        "  web_search_needed     — true ONLY for current events, live prices, sports "
+        "scores, recent news, today's weather, or anything that changes day-to-day.\n"
+        "  query                 — a concise search / retrieval query for the question.\n\n"
+        "--- LIBRARY CARD (available VDB collections) ---\n"
+        f"{library_card_json}\n"
+        "--- END LIBRARY CARD ---\n\n"
+        "If the Library Card is empty or no collection is relevant, set "
+        "required_collections to [].\n"
+        "For greetings, maths, code analysis, code generation, grammar, creative "
+        "writing, opinions, or anything answerable from general knowledge: set "
+        "web_search_needed to false and required_collections to [].\n"
+        'Fallback (no tools, no VDB): {"required_collections": [], "web_search_needed": false, "query": ""}'
+    )
 
 
 @dataclasses.dataclass(slots=True)
@@ -333,13 +355,15 @@ class ToolRouterResult:
     """Structured output from the tool-routing layer (Layer 1).
 
     Attributes:
-        tools_needed: Ordered list of MCP tool names to invoke.
-        queries: One query string per entry in ``tools_needed``.
+        required_collections: VDB collection names the router flagged as relevant.
+        web_search_needed: Whether the router determined a live web search is required.
+        query: The retrieval / search query string.
         raw: The raw JSON string returned by the router model.
     """
 
-    tools_needed: list[str]
-    queries: list[str]
+    required_collections: list[str]
+    web_search_needed: bool
+    query: str
     raw: str
 
 
@@ -348,6 +372,7 @@ def _call_tool_router(
     history: list[dict[str, Any]] | None = None,
     *,
     router_model: str | None = None,
+    library_card_json: str = "[]",
 ) -> ToolRouterResult:
     """Call the router model (Layer 1) via the Ollama chat-completions API.
 
@@ -355,6 +380,8 @@ def _call_tool_router(
     overhead and to enforce strict JSON-only output from the small model.
     History is passed as proper ``messages`` array entries so the model
     receives a structured multi-turn conversation rather than a text blob.
+    The live Library Card is injected into the system prompt so the router
+    can reference existing VDB collections for Recursive Routing (§8, Task 3).
     On any parse failure the function returns a safe no-tool result so the
     pipeline never blocks.
 
@@ -364,16 +391,20 @@ def _call_tool_router(
             ``[{"role": "user"|"assistant", "content": "..."}]``.
         router_model: Override the router model for this call.  Defaults to
             the ``OLLAMA_MODEL_ROUTER`` setting.
+        library_card_json: JSON string of Master Registry collection descriptors
+            fetched at the start of the current ``run_task()`` call.
 
     Returns:
-        A :class:`ToolRouterResult` with validated tool names and queries.
+        A :class:`ToolRouterResult` with collection names, web-search flag, and query.
     """
     model: str = router_model or _ROUTER_MODEL
     completions_url: str = cfg.ollama_base_url.rstrip("/") + "/chat/completions"
 
+    system_prompt: str = _build_router_prompt(library_card_json)
+
     # Build messages: system prompt, then history turns, then current question.
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": _ROUTER_SYSTEM_PROMPT}
+        {"role": "system", "content": system_prompt}
     ]
     for turn in (history or []):
         role = turn.get("role", "")
@@ -402,22 +433,43 @@ def _call_tool_router(
         )
         logger.info("[tool_router] raw=%r", raw_text[:300])
 
-        parsed: dict[str, Any] = json.loads(raw_text)
-        tools_needed: list[str] = [
-            t for t in parsed.get("tools_needed", []) if t in _KNOWN_TOOLS
-        ]
-        queries: list[str] = list(parsed.get("queries", []))
+        # Strip Markdown code fences small models sometimes wrap JSON in.
+        clean_text = re.sub(r"^```[a-z]*\n?", "", raw_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r"\n?```$", "", clean_text).strip()
 
-        # Normalise length: pad or truncate so len(queries) == len(tools_needed).
-        if len(queries) < len(tools_needed):
-            queries.extend([""] * (len(tools_needed) - len(queries)))
+        parsed: dict[str, Any] = json.loads(clean_text)
+
+        # ----------------------------------------------------------------
+        # Support both new schema and legacy schema from older model output.
+        # New: {required_collections, web_search_needed, query}
+        # Legacy: {tools_needed, queries}  — map to new fields automatically.
+        # ----------------------------------------------------------------
+        if "required_collections" in parsed or "web_search_needed" in parsed:
+            required_collections: list[str] = list(
+                parsed.get("required_collections") or []
+            )
+            web_search_needed: bool = bool(parsed.get("web_search_needed", False))
+            query: str = str(parsed.get("query") or "")
         else:
-            queries = queries[: len(tools_needed)]
+            # Legacy fallback: map tools_needed=["search_web"] → web_search_needed=True
+            legacy_tools: list[str] = list(parsed.get("tools_needed") or [])
+            legacy_queries: list[str] = list(parsed.get("queries") or [])
+            web_search_needed = "search_web" in legacy_tools
+            query = legacy_queries[0] if legacy_queries else ""
+            required_collections = []
 
         result = ToolRouterResult(
-            tools_needed=tools_needed, queries=queries, raw=raw_text
+            required_collections=required_collections,
+            web_search_needed=web_search_needed,
+            query=query,
+            raw=raw_text,
         )
-        logger.info("[tool_router] tools_needed=%s", result.tools_needed)
+        logger.info(
+            "[tool_router] required_collections=%s web_search_needed=%s query=%r",
+            result.required_collections,
+            result.web_search_needed,
+            result.query,
+        )
         return result
 
     except json.JSONDecodeError as exc:
@@ -430,7 +482,165 @@ def _call_tool_router(
         logger.error("[tool_router] Unexpected error: %s", exc, exc_info=True)
 
     # Safe fallback — proceed to direct generation without any tools.
-    return ToolRouterResult(tools_needed=[], queries=[], raw="")
+    return ToolRouterResult(
+        required_collections=[], web_search_needed=False, query="", raw=""
+    )
+
+
+# ---------------------------------------------------------------------------
+# Library Card fetch — populates the router's Library Card context
+# ---------------------------------------------------------------------------
+
+
+def _fetch_library_card() -> str:
+    """Fetch the Master Registry library card from the research-server.
+
+    Returns a JSON list of ``{collection_name, summary, last_updated, doc_count}``
+    dicts for all registered leaf VDB collections.  This list is injected into
+    the router's system prompt every turn so the 3B model can perform Recursive
+    Routing (§8, Task 3).
+
+    On any network or parse error the function returns an empty JSON array so
+    the pipeline degrades gracefully to web-search-only routing.
+
+    Returns:
+        JSON-encoded list string, e.g. ``'[{"collection_name": "python_abc", ...}]'``.
+    """
+    try:
+        result_json: str = _call_research_tool("get_library_card")
+        # Validate it parses cleanly; fall back to empty list on failure.
+        parsed = json.loads(result_json)
+        if isinstance(parsed, list):
+            logger.info("[library_card] fetched %d collection entries", len(parsed))
+            return result_json
+        logger.warning(
+            "[library_card] unexpected response type %s — using empty card",
+            type(parsed).__name__,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[library_card] could not fetch library card: %s", exc
+        )
+    return "[]"
+
+
+# ---------------------------------------------------------------------------
+# Semantic Gap check — determines if VDB context is sufficient
+# ---------------------------------------------------------------------------
+
+
+def _check_semantic_gap(query: str) -> dict[str, Any]:
+    """Query the Master Registry and evaluate whether a Semantic Gap exists.
+
+    A Semantic Gap is declared when the best-matching VDB collection summary
+    scores below SEMANTIC_GAP_THRESHOLD (0.85) against the user query.
+
+    Args:
+        query: The user's natural-language question or retrieval query.
+
+    Returns:
+        Parsed dict from the research-server ``query_master_registry`` tool:
+        ``{max_similarity, has_gap, semantic_gap_threshold, collections}``.
+        Returns a synthetic gap-detected dict on any error.
+    """
+    try:
+        result_json: str = _call_research_tool(
+            "query_master_registry", query=query, top_k=3
+        )
+        result: Any = json.loads(result_json)
+        if isinstance(result, dict) and "has_gap" in result:
+            logger.info(
+                "[semantic_gap] max_similarity=%.4f has_gap=%s",
+                result.get("max_similarity", 0.0),
+                result.get("has_gap", True),
+            )
+            return result
+    except Exception as exc:
+        logger.warning("[semantic_gap] check failed: %s", exc)
+    # Fail-safe: assume gap detected so we always fall back to web search.
+    return {"max_similarity": 0.0, "has_gap": True, "collections": []}
+
+
+# ---------------------------------------------------------------------------
+# Librarian delegation — persist research results into the VDB
+# ---------------------------------------------------------------------------
+
+
+def _delegate_to_librarian(
+    web_results_json: str,
+    query: str,
+    gap_check: dict[str, Any],
+) -> None:
+    """Persist web search results into the VDB via the LibrarianAgent tools.
+
+    Implements the Research → Vectorize → Register workflow (§8.2):
+      1. Convert each web-search hit into a ``{text, metadata}`` document.
+      2. Compare ``max_similarity`` from the Semantic Gap check against
+         ``UPDATE_THRESHOLD`` (0.95) to decide create vs. update.
+      3. Call the appropriate research-server tool asynchronously so the
+         response latency is not added to the user-facing answer time.
+
+    Args:
+        web_results_json: JSON string of ``[{title, url, snippet}]`` dicts.
+        query: The original retrieval query (used as topic summary hint).
+        gap_check: Parsed result from :func:`_check_semantic_gap`.
+    """
+    try:
+        raw_results: Any = json.loads(web_results_json)
+        if not isinstance(raw_results, list) or not raw_results:
+            return
+
+        # Convert web hits to VDB document schema.
+        documents: list[dict[str, Any]] = [
+            {
+                "text": (
+                    f"{hit.get('title', '')}\n{hit.get('snippet', '')}"
+                ).strip(),
+                "metadata": {
+                    "source_url": hit.get("url", ""),
+                    "query": query,
+                    "related_collections": [],
+                },
+            }
+            for hit in raw_results
+            if hit.get("snippet") or hit.get("title")
+        ]
+        if not documents:
+            return
+
+        max_similarity: float = float(gap_check.get("max_similarity", 0.0))
+        collections: list[dict[str, Any]] = gap_check.get("collections", [])
+        best_collection: str = (
+            collections[0].get("collection_name", "") if collections else ""
+        )
+
+        # UPDATE_THRESHOLD from the research-server librarian (§8.3).
+        UPDATE_THRESHOLD_LOCAL: float = 0.95
+
+        if max_similarity >= UPDATE_THRESHOLD_LOCAL and best_collection:
+            logger.info(
+                "[librarian] similarity=%.4f ≥ %.2f — updating collection %r",
+                max_similarity, UPDATE_THRESHOLD_LOCAL, best_collection,
+            )
+            _call_research_tool(
+                "update_collection",
+                name=best_collection,
+                documents=documents,
+                summary="",
+            )
+        else:
+            logger.info(
+                "[librarian] similarity=%.4f < %.2f — creating new collection for query %r",
+                max_similarity, UPDATE_THRESHOLD_LOCAL, query,
+            )
+            _call_research_tool(
+                "create_collection",
+                name=re.sub(r"\W+", "_", query[:40].lower()).strip("_"),
+                summary=query,
+                documents=documents,
+            )
+    except Exception as exc:
+        logger.error("[librarian] delegation failed: %s", exc, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -438,51 +648,38 @@ def _call_tool_router(
 # ---------------------------------------------------------------------------
 
 
-def _execute_tools(
-    router_result: ToolRouterResult,
-) -> list[dict[str, Any]]:
-    """Execute the tools requested by the ToolRouter and collect their results.
+def _execute_web_search(query: str) -> list[dict[str, Any]]:
+    """Execute a web search and return structured tool output entries.
 
-    Tool invocations that return an error dict are excluded from the output so
-    error JSON is never injected into the generator as fake research data.
+    Replaces the old ``_execute_tools`` for the single search_web case.
+    Error results are silently dropped so the generator never receives
+    error JSON as fake research data.
 
     Args:
-        router_result: The routing decision from :func:`_call_tool_router`.
+        query: The search query string.
 
     Returns:
-        A list of dicts, one per *successful* tool invocation:
-        ``{"tool": name, "query": query_string, "result": json_string}``.
+        A list with zero or one ``{tool, query, result}`` dict.
     """
-    tool_outputs: list[dict[str, Any]] = []
-    for tool_name, query in zip(router_result.tools_needed, router_result.queries):
-        logger.info(
-            "[execute_tools] invoking tool=%r query=%r", tool_name, query
-        )
-        result_json: str = _call_research_tool(tool_name, query=query)
+    if not query:
+        return []
 
-        # Drop results that are error dicts — never pass error payloads to the
-        # generator as "tool results", otherwise it will hallucinate from them.
-        try:
-            parsed = json.loads(result_json)
-            if isinstance(parsed, dict) and "error" in parsed:
-                logger.warning(
-                    "[execute_tools] tool=%r returned an error — skipping injection: %s",
-                    tool_name,
-                    parsed["error"],
-                )
-                continue
-        except json.JSONDecodeError:
-            pass  # Not valid JSON at all — still include it; generator can handle prose.
+    logger.info("[execute_web_search] query=%r", query)
+    result_json: str = _search_web_direct(query)
 
-        tool_outputs.append(
-            {"tool": tool_name, "query": query, "result": result_json}
-        )
-        logger.info(
-            "[execute_tools] tool=%r returned %d chars",
-            tool_name,
-            len(result_json),
-        )
-    return tool_outputs
+    try:
+        parsed = json.loads(result_json)
+        if isinstance(parsed, dict) and "error" in parsed:
+            logger.warning(
+                "[execute_web_search] search returned error — skipping: %s",
+                parsed["error"],
+            )
+            return []
+    except json.JSONDecodeError:
+        pass
+
+    logger.info("[execute_web_search] returned %d chars", len(result_json))
+    return [{"tool": "search_web", "query": query, "result": result_json}]
 
 
 # ---------------------------------------------------------------------------
@@ -672,11 +869,15 @@ def run_task(
     """Execute a user task through the two-layer heterogeneous pipeline.
 
     Pipeline:
-      1. Build full prompt with conversation history injected.
-      2. Human approval gate — keyword check against the prompt.
-      3. Layer 1 — ToolRouter: structured JSON routing decision.
-      4. Tool execution — tools run in-process, results collected.
-      5. Layer 2 — Generator: synthesises final answer, optionally grounded
+      1. Human approval gate — keyword check against the prompt.
+      2. Fetch Library Card from Master Registry + Layer 1 ToolRouter:
+         structured JSON routing decision (required_collections, web_search_needed, query).
+      3. Semantic Gap check — query Master Registry to measure VDB coverage.
+         a. If gap < SEMANTIC_GAP_THRESHOLD and VDB has relevant collections:
+            inject VDB context, skip web search.
+         b. If gap detected or router requested web search: run web search,
+            then delegate results to LibrarianAgent (create or update collection).
+      4. Layer 2 — Generator: synthesises final answer, optionally grounded
          by injected ``<tool_results>`` context.
 
     Args:
@@ -724,9 +925,26 @@ def run_task(
             return "Task aborted by human operator."
 
     # -----------------------------------------------------------------------
-    # Step 2 — Layer 1: ToolRouter
-    # History is passed as structured messages — never serialised to a blob.
+    # Step 2 — Fetch Library Card and run Layer 1 (ToolRouter)
+    # The live Library Card is injected into the router's system prompt for
+    # Recursive Routing so the 3B model knows which VDB collections exist.
     # -----------------------------------------------------------------------
+    _emit(
+        on_message,
+        agent="Librarian",
+        recipient="Orchestrator",
+        content="[Library Card] Fetching Master Registry catalogue...",
+        event_type="message",
+    )
+    library_card_json: str = _fetch_library_card()
+    _emit(
+        on_message,
+        agent="Librarian",
+        recipient="Orchestrator",
+        content=f"[Library Card] {library_card_json[:200]}{'...' if len(library_card_json) > 200 else ''}",
+        event_type="message",
+    )
+
     _emit(
         on_message,
         agent="ToolRouter",
@@ -735,11 +953,15 @@ def run_task(
         event_type="message",
     )
     router_result: ToolRouterResult = _call_tool_router(
-        user_prompt, history, router_model=router_model
+        user_prompt,
+        history,
+        router_model=router_model,
+        library_card_json=library_card_json,
     )
     routing_summary: str = (
-        f"[ToolRouter] tools_needed={router_result.tools_needed}  "
-        f"queries={router_result.queries}"
+        f"[ToolRouter] required_collections={router_result.required_collections}  "
+        f"web_search_needed={router_result.web_search_needed}  "
+        f"query={router_result.query!r}"
     )
     logger.info(routing_summary)
     _emit(
@@ -751,22 +973,84 @@ def run_task(
     )
 
     # -----------------------------------------------------------------------
-    # Step 3 — Tool execution
+    # Step 3 — Semantic Gap check + tool execution + Librarian delegation
+    #
+    # Flow:
+    #   a. Query Master Registry to measure VDB coverage.
+    #   b. If required_collections were identified and gap < threshold:
+    #      inject VDB results as additional context (no web search needed).
+    #   c. If gap detected (or router requested web search): run web search.
+    #   d. After web search: delegate results to LibrarianAgent for storage.
     # -----------------------------------------------------------------------
     tool_outputs: list[dict[str, Any]] = []
-    if router_result.tools_needed:
-        tool_outputs = _execute_tools(router_result)
-        for entry in tool_outputs:
-            _emit(
-                on_message,
-                agent=entry["tool"],
-                recipient="Orchestrator",
-                content=(
-                    f"[{entry['tool']}] query={entry['query']!r} "
-                    f"({len(entry['result'])} chars returned)"
-                ),
-                event_type="function_call",
-            )
+
+    # Always run the Semantic Gap check so we know current VDB coverage.
+    search_query: str = router_result.query or user_prompt
+    gap_check: dict[str, Any] = _check_semantic_gap(search_query)
+    has_gap: bool = bool(gap_check.get("has_gap", True))
+    max_sim: float = float(gap_check.get("max_similarity", 0.0))
+    _emit(
+        on_message,
+        agent="Librarian",
+        recipient="Orchestrator",
+        content=(
+            f"[SemanticGap] max_similarity={max_sim:.4f} "
+            f"has_gap={has_gap}  "
+            f"threshold={gap_check.get('semantic_gap_threshold', 0.85)}"
+        ),
+        event_type="message",
+    )
+
+    # If the VDB has adequate coverage, retrieve context from it directly.
+    vdb_collections: list[dict[str, Any]] = gap_check.get("collections", [])
+    if not has_gap and vdb_collections:
+        logger.info(
+            "[orchestrator] VDB context sufficient (max_similarity=%.4f) "
+            "— skipping web search.",
+            max_sim,
+        )
+        _emit(
+            on_message,
+            agent="Librarian",
+            recipient="Orchestrator",
+            content=(
+                f"[VDB Hit] Answering from memory "
+                f"(collections: {[c['collection_name'] for c in vdb_collections]})"
+            ),
+            event_type="function_call",
+        )
+
+    # Web search: triggered when router requested it OR a Semantic Gap exists.
+    if router_result.web_search_needed or has_gap:
+        if not search_query:
+            logger.warning("[orchestrator] web search flagged but query is empty — skipping")
+        else:
+            tool_outputs = _execute_web_search(search_query)
+            for entry in tool_outputs:
+                _emit(
+                    on_message,
+                    agent=entry["tool"],
+                    recipient="Orchestrator",
+                    content=(
+                        f"[{entry['tool']}] query={entry['query']!r} "
+                        f"({len(entry['result'])} chars returned)"
+                    ),
+                    event_type="function_call",
+                )
+            # Delegate results to the LibrarianAgent for VDB persistence.
+            if tool_outputs:
+                _emit(
+                    on_message,
+                    agent="Librarian",
+                    recipient="Orchestrator",
+                    content="[Librarian] Persisting research results to VDB...",
+                    event_type="message",
+                )
+                _delegate_to_librarian(
+                    tool_outputs[0]["result"],
+                    search_query,
+                    gap_check,
+                )
 
     # -----------------------------------------------------------------------
     # Step 4 — Layer 2: Generator
