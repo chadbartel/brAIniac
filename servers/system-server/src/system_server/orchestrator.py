@@ -338,7 +338,8 @@ class ToolRouterResult:
 
 
 def _call_tool_router(
-    prompt: str,
+    user_prompt: str,
+    history: list[dict[str, Any]] | None = None,
     *,
     router_model: str | None = None,
 ) -> ToolRouterResult:
@@ -346,11 +347,15 @@ def _call_tool_router(
 
     Uses a direct ``httpx`` call rather than AutoGen to avoid GroupChat
     overhead and to enforce strict JSON-only output from the small model.
+    History is passed as proper ``messages`` array entries so the model
+    receives a structured multi-turn conversation rather than a text blob.
     On any parse failure the function returns a safe no-tool result so the
     pipeline never blocks.
 
     Args:
-        prompt: The full user prompt (may include conversation history prefix).
+        user_prompt: The current user request (not including history).
+        history: Prior conversation turns as
+            ``[{"role": "user"|"assistant", "content": "..."}]``.
         router_model: Override the router model for this call.  Defaults to
             the ``OLLAMA_MODEL_ROUTER`` setting.
 
@@ -360,12 +365,20 @@ def _call_tool_router(
     model: str = router_model or _ROUTER_MODEL
     completions_url: str = cfg.ollama_base_url.rstrip("/") + "/chat/completions"
 
+    # Build messages: system prompt, then history turns, then current question.
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": _ROUTER_SYSTEM_PROMPT}
+    ]
+    for turn in (history or []):
+        role = turn.get("role", "")
+        content = _str_content(turn.get("content"))
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_prompt})
+
     payload: dict[str, Any] = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
+        "messages": messages,
         "temperature": 0.0,  # deterministic routing decision
         "stream": False,
     }
@@ -473,21 +486,25 @@ _GENERATOR_RESEARCH_SYSTEM_PROMPT: str = (
 
 
 def _call_generator(
-    prompt: str,
+    user_prompt: str,
     tool_outputs: list[dict[str, Any]],
+    history: list[dict[str, Any]] | None = None,
     *,
     generator_model: str | None = None,
 ) -> str:
     """Call the generator model (Layer 2) via the Ollama chat-completions API.
 
-    If tool results are available they are injected into the user message
-    inside clearly delimited ``<tool_results>...</tool_results>`` tags so the
-    model can synthesise from grounded data.
+    Conversation history is passed as proper ``messages`` array entries so
+    the model natively understands multi-turn context and never echoes the
+    input.  If tool results are available they are injected into the final
+    user message inside ``<tool_results>...</tool_results>`` delimiters.
 
     Args:
-        prompt: The original user prompt (history already prepended).
+        user_prompt: The current user request (not including history).
         tool_outputs: List of ``{tool, query, result}`` dicts from
             :func:`_execute_tools`.  May be empty for CHAT-mode requests.
+        history: Prior conversation turns as
+            ``[{"role": "user"|"assistant", "content": "..."}]``.
         generator_model: Override the generator model for this call.  Defaults
             to the ``OLLAMA_MODEL_GENERATOR`` setting.
 
@@ -500,8 +517,22 @@ def _call_generator(
     model: str = generator_model or _GENERATOR_MODEL
     completions_url: str = cfg.ollama_base_url.rstrip("/") + "/chat/completions"
 
+    system_content: str = (
+        _GENERATOR_RESEARCH_SYSTEM_PROMPT if tool_outputs else _GENERATOR_SYSTEM_PROMPT
+    )
+
+    # Build messages: system, then history turns, then the final user message.
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": system_content}
+    ]
+    for turn in (history or []):
+        role = turn.get("role", "")
+        content = _str_content(turn.get("content"))
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+
     if tool_outputs:
-        # Build the injection block — one section per tool invocation.
+        # Inject tool results into the final user message only.
         sections: list[str] = []
         for entry in tool_outputs:
             sections.append(
@@ -510,21 +541,18 @@ def _call_generator(
                 f"Results:\n{entry['result']}"
             )
         injection_block: str = "\n\n---\n\n".join(sections)
-        user_content: str = (
+        final_user_content: str = (
             f"<tool_results>\n{injection_block}\n</tool_results>\n\n"
-            f"User question: {prompt}"
+            f"User question: {user_prompt}"
         )
-        system_content: str = _GENERATOR_RESEARCH_SYSTEM_PROMPT
     else:
-        user_content = prompt
-        system_content = _GENERATOR_SYSTEM_PROMPT
+        final_user_content = user_prompt
+
+    messages.append({"role": "user", "content": final_user_content})
 
     payload: dict[str, Any] = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
-        ],
+        "messages": messages,
         "temperature": 0.4,
         "stream": False,
     }
@@ -644,28 +672,14 @@ def run_task(
     """
     logger.info("=== New task received ===")
     logger.info("Prompt: %s", user_prompt)
-
-    # -----------------------------------------------------------------------
-    # Step 1 — Build full_prompt with conversation history
-    # -----------------------------------------------------------------------
     if history:
-        context_lines: list[str] = ["[Conversation so far]"]
-        for turn in history:
-            role_label = "User" if turn.get("role") == "user" else "Assistant"
-            context_lines.append(
-                f"{role_label}: {_str_content(turn.get('content')).strip()}"
-            )
-        context_lines.append("[Current question]")
-        full_prompt: str = "\n".join(context_lines) + "\n" + user_prompt
-        logger.info("Injected %d prior history turns into prompt.", len(history))
-    else:
-        full_prompt = user_prompt
+        logger.info("History turns: %d", len(history))
 
     # -----------------------------------------------------------------------
-    # Step 2 — Human approval gate
+    # Step 1 — Human approval gate (checks current prompt only)
     # -----------------------------------------------------------------------
     needs_approval, trigger = _requires_human_approval(
-        full_prompt, cfg.human_approval_keywords
+        user_prompt, cfg.human_approval_keywords
     )
     if needs_approval:
         logger.warning(
@@ -675,7 +689,7 @@ def run_task(
         print(
             f"\n[brAIniac] HUMAN APPROVAL REQUIRED\n"
             f"Trigger keyword: '{trigger}'\n"
-            f"Prompt:\n{full_prompt}\n"
+            f"Prompt: {user_prompt}\n"
             f"Type 'yes' to proceed or anything else to abort: ",
             end="",
             flush=True,
@@ -686,7 +700,8 @@ def run_task(
             return "Task aborted by human operator."
 
     # -----------------------------------------------------------------------
-    # Step 3 — Layer 1: ToolRouter
+    # Step 2 — Layer 1: ToolRouter
+    # History is passed as structured messages — never serialised to a blob.
     # -----------------------------------------------------------------------
     _emit(
         on_message,
@@ -696,7 +711,7 @@ def run_task(
         event_type="message",
     )
     router_result: ToolRouterResult = _call_tool_router(
-        full_prompt, router_model=router_model
+        user_prompt, history, router_model=router_model
     )
     routing_summary: str = (
         f"[ToolRouter] tools_needed={router_result.tools_needed}  "
@@ -712,7 +727,7 @@ def run_task(
     )
 
     # -----------------------------------------------------------------------
-    # Step 4 — Tool execution
+    # Step 3 — Tool execution
     # -----------------------------------------------------------------------
     tool_outputs: list[dict[str, Any]] = []
     if router_result.tools_needed:
@@ -730,7 +745,8 @@ def run_task(
             )
 
     # -----------------------------------------------------------------------
-    # Step 5 — Layer 2: Generator
+    # Step 4 — Layer 2: Generator
+    # History is passed as structured messages — never serialised to a blob.
     # -----------------------------------------------------------------------
     _emit(
         on_message,
@@ -741,8 +757,9 @@ def run_task(
     )
     try:
         raw_answer: str = _call_generator(
-            full_prompt,
+            user_prompt,
             tool_outputs,
+            history,
             generator_model=generator_model,
         )
     except httpx.HTTPStatusError as exc:
@@ -756,12 +773,12 @@ def run_task(
 
     if not answer:
         logger.warning("[generator] Empty answer — using deterministic fallback.")
-        history_msgs: list[dict[str, Any]] = [
-            {"role": "user", "content": full_prompt}
-        ]
-        if raw_answer:
-            history_msgs.append({"role": "assistant", "content": raw_answer})
-        answer = _best_fallback(history_msgs)
+        answer = _best_fallback(
+            [{"role": "user", "content": user_prompt}]
+            + ([
+                {"role": "assistant", "content": raw_answer}
+            ] if raw_answer else [])
+        )
 
     # Emit final answer through the standard agent channel so the stream
     # panel in the web tester shows the synthesised response.
