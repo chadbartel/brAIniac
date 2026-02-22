@@ -33,18 +33,28 @@ services:
       - ollama_data:/root/.ollama
     environment:
       OLLAMA_KEEP_ALIVE: "24h"
-    # Pull the default model on first start
+    # Pull all required models on first start.
+    # Both the generator and the router model must be present before the
+    # system-server is allowed to start (enforced by the HTTP healthcheck below).
     entrypoint: >
       sh -c "ollama serve &
              sleep 5 &&
              ollama pull ${OLLAMA_MODEL:-dolphin-llama3} &&
+             ollama pull ${OLLAMA_MODEL_ROUTER:-llama3.2:3b} &&
              wait"
     healthcheck:
-      test: ["CMD-SHELL", "bash -c '(exec 3<>/dev/tcp/localhost/11434) 2>/dev/null || exit 1'"]
-      interval: 30s
+      # Use `ollama list` to verify at least one model is indexed before
+      # reporting healthy.  A plain TCP check passes immediately (before model
+      # pulls complete), causing a race condition where system-server fires
+      # requests and gets 404s.  The Ollama image ships the ollama CLI but
+      # does not include Python/curl/wget, so we rely on the CLI here.
+      test:
+        - "CMD-SHELL"
+        - "test $(ollama list 2>/dev/null | wc -l) -gt 1"
+      interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 120s   # model pull can take time on cold start
+      retries: 10
+      start_period: 300s   # llama3.2:3b pull can take several minutes
     deploy:
       resources:
         reservations:
@@ -116,9 +126,14 @@ services:
       - "${SYSTEM_PORT:-8300}:8300"
     environment:
       OLLAMA_BASE_URL: "http://ollama:11434/v1"
+      # Generator model (Layer 2 — prose synthesis)
+      OLLAMA_MODEL_GENERATOR: "${OLLAMA_MODEL:-dolphin-llama3}"
+      # Router model (Layer 1 — tool routing, must be pulled by Ollama entrypoint)
+      OLLAMA_MODEL_ROUTER: "${OLLAMA_MODEL_ROUTER:-llama3.2:3b}"
+      # Legacy alias kept for backward compat
       OLLAMA_MODEL: "${OLLAMA_MODEL:-dolphin-llama3}"
       RESEARCH_SERVER_URL: "http://research-server:8100/sse"
-      MAX_ROUNDS: "${MAX_ROUNDS:-20}"
+      MAX_ROUNDS: "${MAX_ROUNDS:-4}"
       API_HOST: "0.0.0.0"
       API_PORT: "8300"
     depends_on:

@@ -302,23 +302,29 @@ def _requires_human_approval(
 # ---------------------------------------------------------------------------
 
 # Whitelist of tool names the router is permitted to request.
-_KNOWN_TOOLS: frozenset[str] = frozenset({"search_web", "store_memory", "query_memory"})
+# Only search_web is available — it runs in-process via DDGS.
+# store_memory / query_memory are reserved for future agent-native
+# function-calling when model quality improves; they cannot be reached
+# via a simple HTTP call today (research-server is SSE/MCP only).
+_KNOWN_TOOLS: frozenset[str] = frozenset({"search_web"})
 
 _ROUTER_SYSTEM_PROMPT: str = (
-    "You are a tool-routing controller. Your ONLY job is to decide which tools "
-    "are needed to answer the user's message. Do NOT answer the question yourself.\n\n"
+    "You are a tool-routing controller. Your ONLY job is to decide whether "
+    "a web search is needed to answer the user's message. "
+    "Do NOT answer the question yourself.\n\n"
     "Output EXACTLY one JSON object and nothing else — no prose, no markdown, "
     "no code fences. The object MUST conform to this schema:\n\n"
-    '{"tools_needed": ["search_web" | "store_memory" | "query_memory"], '
-    '"queries": ["<one query string per tool>"]}\n\n'
+    '{"tools_needed": ["search_web"], "queries": ["<search query>"]}\n\n'
     "Rules:\n"
-    "- Set both lists to [] when the question can be answered from general "
-    "knowledge without live data (greetings, maths, coding, grammar, creative "
-    "writing, opinions, or explaining stable concepts).\n"
-    '- Include \"search_web\" when the answer requires current events, live data, '
-    "real-time prices, sports scores, recent news, or anything time-sensitive.\n"
+    "- Output {\"tools_needed\": [], \"queries\": []} for ANY of these — "
+    "greetings, maths, code analysis, code generation, grammar, creative writing, "
+    "opinions, debugging, explaining concepts, or anything answerable from "
+    "general knowledge.\n"
+    '- Include "search_web" ONLY when the answer requires current events, '
+    "live prices, sports scores, recent news, today's weather, or anything "
+    "that changes day-to-day and cannot be known without a live lookup.\n"
     "- queries must have exactly one entry per tool in tools_needed.\n"
-    '- If no tools are needed, output: {"tools_needed": [], "queries": []}'
+    '- If no tools are needed: {"tools_needed": [], "queries": []}'
 )
 
 
@@ -437,11 +443,14 @@ def _execute_tools(
 ) -> list[dict[str, Any]]:
     """Execute the tools requested by the ToolRouter and collect their results.
 
+    Tool invocations that return an error dict are excluded from the output so
+    error JSON is never injected into the generator as fake research data.
+
     Args:
         router_result: The routing decision from :func:`_call_tool_router`.
 
     Returns:
-        A list of dicts, one per tool invocation:
+        A list of dicts, one per *successful* tool invocation:
         ``{"tool": name, "query": query_string, "result": json_string}``.
     """
     tool_outputs: list[dict[str, Any]] = []
@@ -450,6 +459,21 @@ def _execute_tools(
             "[execute_tools] invoking tool=%r query=%r", tool_name, query
         )
         result_json: str = _call_research_tool(tool_name, query=query)
+
+        # Drop results that are error dicts — never pass error payloads to the
+        # generator as "tool results", otherwise it will hallucinate from them.
+        try:
+            parsed = json.loads(result_json)
+            if isinstance(parsed, dict) and "error" in parsed:
+                logger.warning(
+                    "[execute_tools] tool=%r returned an error — skipping injection: %s",
+                    tool_name,
+                    parsed["error"],
+                )
+                continue
+        except json.JSONDecodeError:
+            pass  # Not valid JSON at all — still include it; generator can handle prose.
+
         tool_outputs.append(
             {"tool": tool_name, "query": query, "result": result_json}
         )
