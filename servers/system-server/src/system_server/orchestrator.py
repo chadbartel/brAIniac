@@ -344,17 +344,16 @@ def _build_router_prompt(library_card_json: str = "[]") -> str:
         "Field rules:\n"
         "  required_collections  — list of collection names from the Library Card "
         "(below) that are directly relevant to the question.  Use [] if none match.\n"
-        "  web_search_needed     — true ONLY for current events, live prices, sports "
-        "scores, recent news, today's weather, or anything that changes day-to-day.\n"
+        "  web_search_needed     — true if the question asks for current/live/real-time "
+        "information (weather, news, prices, scores, events) or uses words like "
+        "'now', 'today', 'latest', 'current'. false for greetings, maths, code, "
+        "opinions, creative writing, or historical/static facts.\n"
         "  query                 — a concise search / retrieval query for the question.\n\n"
         "--- LIBRARY CARD (available VDB collections) ---\n"
         f"{library_card_json}\n"
         "--- END LIBRARY CARD ---\n\n"
         "If the Library Card is empty or no collection is relevant, set "
         "required_collections to [].\n"
-        "For greetings, maths, code analysis, code generation, grammar, creative "
-        "writing, opinions, or anything answerable from general knowledge: set "
-        "web_search_needed to false and required_collections to [].\n"
         'Fallback (no tools, no VDB): {"required_collections": [], "web_search_needed": false, "query": ""}'
     )
 
