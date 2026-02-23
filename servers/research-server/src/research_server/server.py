@@ -165,6 +165,22 @@ def search_web(
 
 
 @mcp.tool()
+def get_current_time() -> str:
+    """Return the current date and time in ISO 8601 format with timezone.
+
+    Use this tool when the user asks about "today", "now", "current time",
+    or any query that requires knowing what day/time it is (e.g., weather,
+    news, events, schedules).
+
+    Returns:
+        ISO 8601 timestamp string (e.g., "2026-02-22T15:30:00+00:00").
+    """
+    now_iso: str = datetime.now(timezone.utc).isoformat()
+    logger.info("[get_current_time] returning %s", now_iso)
+    return now_iso
+
+
+@mcp.tool()
 def store_memory(
     text: str = Field(..., description="Text to embed and store."),
     metadata: dict[str, Any] = Field(

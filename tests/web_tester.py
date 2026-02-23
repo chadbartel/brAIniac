@@ -35,6 +35,7 @@ AGENT_ICONS: dict[str, str] = {
     "ToolRouter": "🚦",
     # Individual tool names appear as the agent when a tool fires
     "search_web": "🔍",
+    "get_current_time": "🕐",
     "store_memory": "💾",
     "query_memory": "🧠",
     # LibrarianAgent — Master Registry + VDB lifecycle management

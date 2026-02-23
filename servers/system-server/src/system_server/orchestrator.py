@@ -1081,8 +1081,11 @@ def run_task(
                         ),
                         event_type="function_call",
                     )
-                # Delegate results to the LibrarianAgent for VDB persistence.
-                if tool_outputs:
+                # Delegate to LibrarianAgent when a Semantic Gap triggered the search.
+                # Persistence is driven by gap detection, not by query type.
+                # If has_gap=True, the VDB lacks this knowledge → learn it.
+                # If has_gap=False, VDB coverage was sufficient → nothing to store.
+                if tool_outputs and has_gap:
                     _emit(
                         on_message,
                         agent="Librarian",

@@ -36,6 +36,7 @@ AGENT_COLOURS: dict[str, str] = {
     "ToolRouter": "bold yellow",
     # Tool execution stage (individual tool names also use this)
     "search_web": "bold magenta",
+    "get_current_time": "bold cyan",
     "store_memory": "bold magenta",
     "query_memory": "bold magenta",
     # LibrarianAgent — Master Registry + VDB lifecycle management
