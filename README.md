@@ -6,7 +6,7 @@ Local-first, uncensored AI chatbot optimized for 8GB VRAM (RTX 2070 SUPER).
 
 brAIniac is built with strict modularity and Single Responsibility Principle in mind:
 
-```
+```text
 brAIniac/
 ├── core/                  # Orchestration, rolling memory, and agent routing
 │   ├── __init__.py
@@ -96,7 +96,7 @@ MAX_CONTEXT_MESSAGES=20
 
 ### Example Session
 
-```
+```text
 You: What's the current time?
 
 brAIniac: [Uses get_current_time tool and responds]
@@ -124,6 +124,7 @@ This leaves 2.5-3.5GB VRAM headroom for future additions (TTS, LoRA tuning).
 ## Roadmap
 
 ### Phase 1 (Current) ✅
+
 - [x] Rolling memory buffer
 - [x] Ollama integration
 - [x] Mock FastMCP tools (time, web search)
@@ -131,12 +132,14 @@ This leaves 2.5-3.5GB VRAM headroom for future additions (TTS, LoRA tuning).
 - [x] Rich CLI interface
 
 ### Phase 2 (Planned)
+
 - [ ] Replace mock web_search with SearXNG container
 - [ ] Full FastMCP client integration (actual tool calling)
 - [ ] Add ChromaDB for semantic memory
 - [ ] Implement research-server with IterDRAG
 
 ### Phase 3 (Future)
+
 - [ ] Kokoro TTS integration
 - [ ] Letta (MemGPT) for virtual context management
 - [ ] Multi-agent orchestration
@@ -163,7 +166,7 @@ def my_new_tool(param: str) -> str:
     return json.dumps({"result": "value"})
 ```
 
-2. Update `core/chat.py` to handle the new tool in `execute_tool()`.
+1. Update `core/chat.py` to handle the new tool in `execute_tool()`.
 
 ### Running Tests
 
