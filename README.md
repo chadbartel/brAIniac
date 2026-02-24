@@ -16,6 +16,14 @@ brAIniac/
 │   └── base_tools/       # FastMCP server (time, web search)
 │       ├── __init__.py
 │       └── server.py
+├── tests/                 # Comprehensive test suite
+│   ├── conftest.py       # Pytest fixtures
+│   ├── test_memory.py    # Memory unit tests
+│   ├── test_chat.py      # Chat engine unit tests
+│   ├── test_base_tools.py # Tool unit tests
+│   ├── test_integration.py # Integration tests
+│   ├── web_test_interface.py # Gradio web UI for testing
+│   └── README.md         # Testing documentation
 ├── docker/                # Dockerfiles and compose configs
 │   ├── Dockerfile
 │   └── docker-compose.yml
@@ -130,6 +138,9 @@ This leaves 2.5-3.5GB VRAM headroom for future additions (TTS, LoRA tuning).
 - [x] Mock FastMCP tools (time, web search)
 - [x] Docker deployment
 - [x] Rich CLI interface
+- [x] Comprehensive test suite (40+ tests)
+- [x] Web-based test interface (Gradio)
+- [x] Code coverage reporting
 
 ### Phase 2 (Planned)
 
@@ -170,9 +181,51 @@ def my_new_tool(param: str) -> str:
 
 ### Running Tests
 
+brAIniac includes a comprehensive test suite with 40+ tests covering all components.
+
+**Quick test commands:**
+
 ```bash
+# Run all tests
 poetry run pytest
+
+# Run with coverage report
+poetry run pytest --cov
+
+# Run with verbose output
+poetry run pytest -v
+
+# Generate HTML coverage report
+poetry run pytest --cov --cov-report=html
+# Then open htmlcov/index.html
 ```
+
+**Test specific modules:**
+
+```bash
+poetry run pytest tests/test_memory.py      # Memory tests only
+poetry run pytest tests/test_chat.py        # Chat engine tests only
+poetry run pytest tests/test_base_tools.py  # Tool tests only
+poetry run pytest tests/test_integration.py # Integration tests only
+```
+
+**Web-based test interface:**
+
+```bash
+# Launch interactive Gradio test interface
+poetry run python tests/web_test_interface.py
+
+# Then open browser to: http://127.0.0.1:7860
+```
+
+The web interface allows you to:
+
+- Test chat interactions with mocked LLM
+- Execute and inspect individual tools
+- Experiment with rolling memory behavior
+- View real-time statistics
+
+See [tests/README.md](tests/README.md) for detailed testing documentation.
 
 ### Code Quality
 

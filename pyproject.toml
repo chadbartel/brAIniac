@@ -18,9 +18,13 @@ rich = "^13.9.4"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.4"
+pytest-asyncio = "^0.24.0"
+pytest-mock = "^3.14.0"
+pytest-cov = "^6.0.0"
 black = "^24.10.0"
 mypy = "^1.13.0"
 ruff = "^0.8.4"
+gradio = "^5.15.0"
 
 [build-system]
 requires = ["poetry-core"]
@@ -39,3 +43,22 @@ python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--cov=core",
+    "--cov=servers",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow tests that require external services",
+]
