@@ -1,237 +1,74 @@
-# brainiac/docker/docker-compose.yml
-#
-# Orchestrates:
-#   - ollama          : local LLM inference (OpenAI-compatible API)
-#   - research-server : FastMCP web search + ChromaDB memory
-#   - system-server   : AutoGen orchestrator
-#   - voice-server    : STT/TTS (optional, comment out if not needed)
-#   - chromadb        : persistent vector store for research-server
-#   - tailscale       : secure remote access sidecar
-#
-# Usage:
-#   TAILSCALE_AUTHKEY=<your-key> docker compose up -d
-#
-# Environment variables can be placed in a .env file next to this file.
-
-x-logging: &default-logging
-  driver: "json-file"
-  options:
-    max-size: "10m"
-    max-file: "3"
+version: '3.8'
 
 services:
-  # ---------------------------------------------------------------------------
-  # Ollama — local LLM inference
-  # ---------------------------------------------------------------------------
+  # Ollama service - handles all LLM inference
   ollama:
-    image: ollama/ollama:0.16.3
+    image: ollama/ollama:latest
     container_name: brainiac-ollama
     restart: unless-stopped
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+    
+    # GPU passthrough for NVIDIA GPUs (RTX 2070 SUPER)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    # Persist downloaded models
     volumes:
-      - ollama_data:/root/.ollama
-    environment:
-      OLLAMA_KEEP_ALIVE: "24h"
-    # Pull all required models on first start.
-    # Both the generator and the router model must be present before the
-    # system-server is allowed to start (enforced by the HTTP healthcheck below).
-    entrypoint: >
-      sh -c "ollama serve &
-             sleep 5 &&
-             ollama pull ${OLLAMA_MODEL:-dolphin-llama3} &&
-             ollama pull ${OLLAMA_MODEL_ROUTER:-llama3.2:3b} &&
-             wait"
+      - ollama-models:/root/.ollama
+    
+    ports:
+      - "11434:11434"
+    
+    # Health check using Python's built-in socket module
     healthcheck:
-      # Use `ollama list` to verify at least one model is indexed before
-      # reporting healthy.  A plain TCP check passes immediately (before model
-      # pulls complete), causing a race condition where system-server fires
-      # requests and gets 404s.  The Ollama image ships the ollama CLI but
-      # does not include Python/curl/wget, so we rely on the CLI here.
-      test:
-        - "CMD-SHELL"
-        - "test $(ollama list 2>/dev/null | wc -l) -gt 1"
-      interval: 15s
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.create_connection(('localhost',11434),timeout=3); s.close()\""]
+      interval: 30s
       timeout: 10s
-      retries: 10
-      start_period: 300s   # llama3.2:3b pull can take several minutes
-    # GPU acceleration (optional) — uncomment if nvidia-container-toolkit
-    # is installed and `docker run --gpus all nvidia/cuda:12.0-base nvidia-smi`
-    # succeeds.  Ollama runs on CPU if GPU resources are not available.
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
-    logging: *default-logging
-
-  # ---------------------------------------------------------------------------
-  # ChromaDB — vector memory backend for research-server
-  # ---------------------------------------------------------------------------
-  chromadb:
-    # chromadb/chroma:1.0.0 is a Rust binary image — no Python, wget, or curl.
-    # Python client chromadb ^1.2.0 (resolved 1.2.1) uses the v2 API which is
-    # present in server 1.0.0.  Pin together and update both when upgrading.
-    image: chromadb/chroma:1.0.0
-    container_name: brainiac-chromadb
-    restart: unless-stopped
-    ports:
-      - "${CHROMA_PORT:-8000}:8000"
-    volumes:
-      - chroma_data:/chroma/chroma
-    environment:
-      IS_PERSISTENT: "TRUE"
-      ANONYMIZED_TELEMETRY: "FALSE"
-    healthcheck:
-      # bash /dev/tcp is a built-in TCP probe — no external tools required.
-      # Opens a connection to port 8000; exits 0 if the server is accepting
-      # connections, non-zero otherwise.
-      test:
-        - "CMD-SHELL"
-        - "bash -c 'exec 3<>/dev/tcp/localhost/8000'"
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    logging: *default-logging
-
-  # ---------------------------------------------------------------------------
-  # Research Server — FastMCP (DDG search + ChromaDB memory)
-  # ---------------------------------------------------------------------------
-  research-server:
-    build:
-      context: ../servers/research-server
-      dockerfile: ../../docker/Dockerfile.research
-    container_name: brainiac-research-server
-    restart: unless-stopped
-    ports:
-      - "${RESEARCH_PORT:-8100}:8100"
-    environment:
-      MCP_HOST: "0.0.0.0"
-      MCP_PORT: "8100"
-      USE_REMOTE_CHROMA: "true"
-      CHROMA_HOST: chromadb
-      CHROMA_PORT: "8000"
-      CHROMA_COLLECTION: "${CHROMA_COLLECTION:-brainiac_memory}"
-      MAX_SEARCH_RESULTS: "${MAX_SEARCH_RESULTS:-8}"
-    depends_on:
-      chromadb:
-        condition: service_healthy
-    healthcheck:
-      test:
-        - "CMD-SHELL"
-        - "python -c \"import socket; s=socket.create_connection(('localhost',8100),timeout=3); s.close()\""
-      interval: 20s
-      timeout: 5s
       retries: 3
-    logging: *default-logging
+      start_period: 20s
+    
+    networks:
+      - brainiac-net
 
-  # ---------------------------------------------------------------------------
-  # System Server — AutoGen orchestrator
-  # ---------------------------------------------------------------------------
-  system-server:
+  # brAIniac application service
+  brainiac-app:
     build:
-      context: ../servers/system-server
-      dockerfile: ../../docker/Dockerfile.system
-    container_name: brainiac-system-server
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: brainiac-app
     restart: unless-stopped
-    ports:
-      - "${SYSTEM_PORT:-8300}:8300"
+    
+    # Connect to Ollama service
     environment:
-      OLLAMA_BASE_URL: "http://ollama:11434/v1"
-      # Generator model (Layer 2 — prose synthesis)
-      OLLAMA_MODEL_GENERATOR: "${OLLAMA_MODEL:-dolphin-llama3}"
-      # Router model (Layer 1 — tool routing, must be pulled by Ollama entrypoint)
-      OLLAMA_MODEL_ROUTER: "${OLLAMA_MODEL_ROUTER:-llama3.2:3b}"
-      # Legacy alias kept for backward compat
-      OLLAMA_MODEL: "${OLLAMA_MODEL:-dolphin-llama3}"
-      RESEARCH_SERVER_URL: "http://research-server:8100/sse"
-      MAX_ROUNDS: "${MAX_ROUNDS:-4}"
-      API_HOST: "0.0.0.0"
-      API_PORT: "8300"
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=llama3.1:8b-instruct-q4_K_M
+    
+    # Wait for Ollama to be healthy before starting
     depends_on:
       ollama:
         condition: service_healthy
-      research-server:
-        condition: service_healthy
-    healthcheck:
-      test:
-        - "CMD-SHELL"
-        - "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8300/health', timeout=3)\""
-      interval: 20s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    logging: *default-logging
-
-  # ---------------------------------------------------------------------------
-  # Voice Server — STT/TTS (optional)
-  # ---------------------------------------------------------------------------
-  voice-server:
-    build:
-      context: ../servers/voice-server
-      dockerfile: ../../docker/Dockerfile.voice
-    container_name: brainiac-voice-server
-    restart: unless-stopped
-    ports:
-      - "${VOICE_PORT:-8200}:8200"
-    environment:
-      MCP_HOST: "0.0.0.0"
-      MCP_PORT: "8200"
-      WHISPER_MODEL_SIZE: "${WHISPER_MODEL_SIZE:-base}"
-      WHISPER_DEVICE: "cpu"
-      WHISPER_COMPUTE_TYPE: "int8"
-    healthcheck:
-      test:
-        - "CMD-SHELL"
-        - "python -c \"import socket; s=socket.create_connection(('localhost',8200),timeout=3); s.close()\""
-      interval: 20s
-      timeout: 5s
-      retries: 3
-    logging: *default-logging
-    profiles:
-      - voice  # opt-in: `docker compose --profile voice up`
-
-  # ---------------------------------------------------------------------------
-  # Tailscale — secure remote access sidecar
-  # ---------------------------------------------------------------------------
-  tailscale:
-    image: tailscale/tailscale:v1.94
-    container_name: brainiac-tailscale
-    hostname: brainiac
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
+    
+    # Interactive mode for CLI
+    stdin_open: true
+    tty: true
+    
+    networks:
+      - brainiac-net
+    
+    # Optional: mount local code for development
     volumes:
-      - tailscale_state:/var/lib/tailscale
-      - /dev/net/tun:/dev/net/tun
-      - ./tailscale/tailscaled.env:/tailscaled.env:ro
-    environment:
-      TS_AUTHKEY: "${TAILSCALE_AUTHKEY}"
-      TS_STATE_DIR: "/var/lib/tailscale"
-      TS_EXTRA_ARGS: "--advertise-tags=tag:brainiac --accept-routes"
-      TS_SERVE_CONFIG: "/tailscaled.env"
-    network_mode: host          # must use host to expose all brainiac ports via Tailscale
-    logging: *default-logging
+      - ./core:/app/core
+      - ./servers:/app/servers
+      - ./main.py:/app/main.py
 
-# ---------------------------------------------------------------------------
-# Named volumes
-# ---------------------------------------------------------------------------
 volumes:
-  ollama_data:
-    name: brainiac_ollama_data
-  chroma_data:
-    name: brainiac_chroma_data
-  tailscale_state:
-    name: brainiac_tailscale_state
+  ollama-models:
+    driver: local
 
-# ---------------------------------------------------------------------------
-# Networks
-# ---------------------------------------------------------------------------
 networks:
-  default:
-    name: brainiac_net
+  brainiac-net:
     driver: bridge

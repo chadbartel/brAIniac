@@ -1,233 +1,225 @@
-# brAIniac
+# brAIniac - Phase 1
 
-> Decentralized, local-first AI ecosystem — modular, containerized, uncensored.
+Local-first, uncensored AI chatbot optimized for 8GB VRAM (RTX 2070 SUPER).
 
-## Architecture
+## Architecture Overview
 
-```text
-brAIniac/                           # Project root
-├── servers/
-│   ├── research-server/        # FastMCP: DuckDuckGo search + ChromaDB memory
-│   ├── system-server/          # AutoGen orchestrator + FastAPI HTTP/SSE interface
-│   └── voice-server/           # faster-whisper STT + Kokoro/Piper TTS (optional)
-├── docker/
-│   ├── docker-compose.yml      # Full stack orchestration
-│   ├── Dockerfile.research
-│   ├── Dockerfile.system
-│   ├── Dockerfile.voice
-│   └── tailscale/              # Secure remote access via Tailscale
-│       └── tailscaled.env
-├── tests/
-│   ├── cli_tester.py           # Rich terminal client (SSE streaming)
-│   ├── web_tester.py           # Gradio chat UI with Thought Process panel
-│   └── pyproject.toml          # Test client dependencies
-├── models/                     # GGUF model files
-├── pyproject.toml              # Workspace-level dev tooling
-└── README.md
+brAIniac is built with strict modularity and Single Responsibility Principle in mind:
+
+```
+brAIniac/
+├── core/                  # Orchestration, rolling memory, and agent routing
+│   ├── __init__.py
+│   ├── chat.py           # Main chat loop with Ollama integration
+│   └── memory.py         # Rolling context window (prevents VRAM exhaustion)
+├── servers/               # Isolated MCP servers
+│   └── base_tools/       # FastMCP server (time, web search)
+│       ├── __init__.py
+│       └── server.py
+├── docker/                # Dockerfiles and compose configs
+│   ├── Dockerfile
+│   └── docker-compose.yml
+├── main.py                # CLI entry point
+└── pyproject.toml         # Poetry dependencies
 ```
 
-### Core Design Principles
+## Tech Stack
 
-| Principle | Implementation |
-| --- | --- |
-| **Local-first** | All inference via Ollama (GGUF models, no cloud calls) |
-| **Dynamic delegation** | OrchestratorAgent decomposes tasks → instantiates worker agents per step |
-| **Single Responsibility** | Each MCP server owns exactly one domain |
-| **Human-in-the-loop** | Destructive actions gate on explicit human approval |
-| **Uncensored** | `dolphin-llama3` (or any uncensored GGUF) via Ollama |
+- **Language:** Python 3.12+
+- **Dependency Management:** Poetry
+- **Containerization:** Docker & Docker Compose
+- **LLM Orchestration:** Ollama (local)
+- **Model:** Llama 3.1 8B Instruct (4-bit GGUF) or Qwen 2.5 7B (4-bit GGUF)
+- **Tooling Protocol:** Model Context Protocol (MCP) using FastMCP
+- **CLI:** Rich (formatted terminal output)
 
----
+## Hardware Requirements
+
+- **GPU:** NVIDIA RTX 2070 SUPER (8GB VRAM) or equivalent
+- **RAM:** 16GB+ recommended
+- **Disk:** 10GB+ for models and dependencies
 
 ## Quick Start
 
 ### Prerequisites
 
-- Docker Engine ≥ 26 with the Compose plugin
-- (Optional) NVIDIA GPU + `nvidia-container-toolkit` for GPU inference
-- A Tailscale auth key (only if you want remote access)
+1. **NVIDIA GPU Drivers** and **NVIDIA Container Toolkit** installed
+2. **Docker** and **Docker Compose** installed
+3. **Poetry** installed (for local development)
 
-### 1. Configure environment
+### Option 1: Docker (Recommended)
 
 ```bash
-cp docker/.env.example docker/.env
-# Edit docker/.env — set TAILSCALE_AUTHKEY, OLLAMA_MODEL, etc.
+# Clone the repository
+git clone <repo-url>
+cd brAIniac
+
+# Start the services (Ollama + brAIniac)
+docker compose -f docker/docker-compose.yml up -d
+
+# Pull the model (first time only)
+docker exec -it brainiac-ollama ollama pull llama3.1:8b-instruct-q4_K_M
+
+# Run the interactive CLI
+docker attach brainiac-app
 ```
 
-### 2. Start the stack
+### Option 2: Local Development
 
 ```bash
-cd docker
-docker compose up -d
-```
-
-Ollama will automatically pull `dolphin-llama3` on first start (≈ 5 GB).
-
-To include the voice server:
-
-```bash
-docker compose --profile voice up -d
-```
-
-### 3. Interact with the orchestrator
-
-**Terminal CLI** (streams agent thought process):
-
-```bash
-cd tests && poetry install
-poetry run python cli_tester.py
-```
-
-**Gradio Web UI** (browser chat with expandable Thought Process panel):
-
-```bash
-poetry run python web_tester.py
-# Open http://localhost:7860
-```
-
-**Direct API** (curl):
-
-```bash
-curl -X POST http://localhost:8300/run \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Research the latest developments in local LLM inference."}'
-```
-
----
-
-## Services & Ports
-
-| Service | Port | Description |
-| --- | --- | --- |
-| Ollama | 11434 | OpenAI-compatible LLM inference |
-| ChromaDB | 8000 | Vector memory backend |
-| research-server | 8100 | FastMCP: search + memory tools |
-| system-server | 8300 | AutoGen orchestrator — HTTP API + SSE streaming |
-| voice-server | 8200 | STT/TTS (opt-in via `--profile voice`) |
-
----
-
-## Server Details
-
-### research-server
-
-FastMCP server exposing three tools over SSE (`http://research-server:8100/sse`):
-
-| Tool | Description |
-| --- | --- |
-| `search_web(query, max_results)` | DuckDuckGo text search |
-| `store_memory(text, metadata, doc_id)` | Embed and persist to ChromaDB |
-| `query_memory(query, top_k)` | Semantic recall from ChromaDB |
-
-### system-server (Orchestrator)
-
-AutoGen `GroupChat` with three agents:
-
-- **OrchestratorAgent** — decomposes tasks, builds plans, delegates, synthesises results
-- **ResearchAgent** — calls research-server tools; checks memory before searching
-- **HumanProxy** — intercepts any action containing sensitive keywords (`delete`, `deploy`, etc.) and requires explicit `yes` before proceeding
-
-The server exposes a FastAPI HTTP interface on port `8300`:
-
-| Endpoint | Method | Description |
-| --- | --- | --- |
-| `/health` | GET | Liveness probe |
-| `/run` | POST | Blocking execution — returns full answer + all agent messages |
-| `/run/stream` | POST | SSE stream of agent turns and tool calls as they happen |
-
-### voice-server
-
-Scaffold for STT (`faster-whisper`) and TTS (Kokoro/Piper). Enable the TTS
-backend of your choice by uncommenting the relevant lines in
-`servers/voice-server/pyproject.toml` and `server.py`.
-
----
-
-## Testing the Stack
-
-Two test clients live in `tests/`.  Both target the system-server HTTP API
-on `localhost:8300` by default — change this with `--url`.
-
-### Install test client dependencies
-
-```bash
-cd tests
+# Install dependencies
 poetry install
+
+# Start Ollama separately (ensure it's running on localhost:11434)
+# Then run the CLI
+poetry run python main.py
 ```
 
-### Terminal CLI (`cli_tester.py`)
+### Configuration
 
-Streams every agent turn and tool call to the console in real time with
-colour-coded Rich formatting.
+Create a `.env` file in the project root:
 
-```bash
-# Against the running Docker stack
-poetry run python cli_tester.py
-
-# Against a different host/port
-poetry run python cli_tester.py --url http://localhost:8300
+```env
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=llama3.1:8b-instruct-q4_K_M
+MAX_CONTEXT_MESSAGES=20
 ```
 
-**Colour coding:**
+## Usage
 
-| Colour | Meaning |
-| --- | --- |
-| Cyan | OrchestratorAgent |
-| Green | ResearchAgent |
-| Yellow | HumanProxy |
-| Magenta | MCP tool call |
-| Green panel | Final answer |
+### Interactive Commands
 
-### Browser Web UI (`web_tester.py`)
+- `/help` - Show available commands
+- `/clear` - Clear conversation history (reset rolling memory)
+- `/stats` - Show context statistics (message count, VRAM usage)
+- `/quit` or `/exit` - Exit brAIniac
 
-A Gradio chat interface.  Type a prompt and watch the final answer appear in
-the chat window; expand **🔍 Thought Process** to see every agent delegation
-and tool invocation streamed live.
+### Example Session
 
-```bash
-poetry run python web_tester.py
-# Open http://localhost:7860 in your browser
+```
+You: What's the current time?
 
-# Custom port or public share link
-poetry run python web_tester.py --port 7861 --share
+brAIniac: [Uses get_current_time tool and responds]
+
+You: Search for Python best practices
+
+brAIniac: [Uses web_search tool (mock in Phase 1)]
+
+You: /stats
+
+[Shows: Messages in context: 4/20, Context utilization: 20.0%]
 ```
 
----
+## VRAM Protection Strategy
+
+brAIniac protects your 8GB VRAM ceiling through:
+
+1. **4-bit Quantized Models** - Llama 3.1 8B at 4-bit uses ~4.5-5.5GB VRAM
+2. **Rolling Context Window** - Maximum 20 messages prevents context bloat
+3. **Ollama Isolation** - All LLM inference delegated to separate Docker container
+4. **Lazy Tool Loading** - MCP tools loaded only when needed
+
+This leaves 2.5-3.5GB VRAM headroom for future additions (TTS, LoRA tuning).
+
+## Roadmap
+
+### Phase 1 (Current) ✅
+- [x] Rolling memory buffer
+- [x] Ollama integration
+- [x] Mock FastMCP tools (time, web search)
+- [x] Docker deployment
+- [x] Rich CLI interface
+
+### Phase 2 (Planned)
+- [ ] Replace mock web_search with SearXNG container
+- [ ] Full FastMCP client integration (actual tool calling)
+- [ ] Add ChromaDB for semantic memory
+- [ ] Implement research-server with IterDRAG
+
+### Phase 3 (Future)
+- [ ] Kokoro TTS integration
+- [ ] Letta (MemGPT) for virtual context management
+- [ ] Multi-agent orchestration
+- [ ] Web UI (Gradio or FastAPI + HTMX)
 
 ## Development
 
-Each server is an independent Poetry project. To work on one locally:
+### Adding New MCP Tools
+
+1. Create a new tool in `servers/base_tools/server.py`:
+
+```python
+@mcp.tool()
+def my_new_tool(param: str) -> str:
+    """Tool description.
+
+    Args:
+        param: Parameter description.
+
+    Returns:
+        JSON-encoded result.
+    """
+    # Implementation
+    return json.dumps({"result": "value"})
+```
+
+2. Update `core/chat.py` to handle the new tool in `execute_tool()`.
+
+### Running Tests
 
 ```bash
-cd servers/research-server
-poetry install
-poetry run research-server
+poetry run pytest
 ```
 
 ### Code Quality
 
 ```bash
-# From any server directory:
-poetry run black src/
-poetry run isort src/
-poetry run flake8 src/
-poetry run mypy src/
-poetry run pytest
+# Format code
+poetry run black .
+
+# Lint
+poetry run ruff check .
+
+# Type check
+poetry run mypy .
 ```
 
----
+## Troubleshooting
 
-## Extending the System
+### Ollama Connection Refused
 
-1. **Add a new MCP server** — create `servers/<name>-server/` following the
-   research-server pattern. Expose tools via `@mcp.tool()`.
-2. **Register a new worker agent** — add a factory function in
-   `servers/system-server/src/system_server/orchestrator.py`, create the agent with
-   `llm_config` pointing at Ollama, and register it in the `GroupChat`.
-3. **Swap the LLM** — set `OLLAMA_MODEL` in `.env` to any model tag available
-   on Ollama Hub (e.g. `llama3:70b-instruct`, `mistral`, `qwen2`).
+```bash
+# Check if Ollama is running
+docker ps | grep ollama
 
----
+# View Ollama logs
+docker logs brainiac-ollama
+```
+
+### Model Not Found
+
+```bash
+# Pull the model manually
+docker exec -it brainiac-ollama ollama pull llama3.1:8b-instruct-q4_K_M
+
+# Or use alternative model
+docker exec -it brainiac-ollama ollama pull qwen2.5:7b-instruct-q4_K_M
+```
+
+### CUDA/GPU Issues
+
+```bash
+# Verify NVIDIA runtime
+docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
+
+# Check GPU visibility in Ollama container
+docker exec -it brainiac-ollama nvidia-smi
+```
 
 ## License
 
-See [LICENSE](LICENSE).
+[Your chosen license]
+
+## Contributing
+
+Contributions welcome! Please follow the existing architecture patterns and ensure all code is fully typed (Python 3.12+ type hints).

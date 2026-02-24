@@ -1,124 +1,41 @@
 [tool.poetry]
 name = "brainiac"
 version = "0.1.0"
-description = "Decentralized, local-first AI ecosystem — workspace root"
-authors = ["chadbartel <10793854+chadbartel@users.noreply.github.com>"]
-license = "CC0-1.0"
+description = "Local-first, uncensored AI chatbot optimized for 8GB VRAM"
+authors = ["brAIniac Team"]
 readme = "README.md"
-package-mode = false
-packages = []
+packages = [
+    { include = "core" },
+    { include = "servers" },
+]
 
 [tool.poetry.dependencies]
 python = "~3.12"
+ollama = "^0.4.4"
+fastmcp = "^2.2.0"
+python-dotenv = "^1.0.1"
+rich = "^13.9.4"
 
 [tool.poetry.group.dev.dependencies]
-black = "^24.0.0"
-isort = "^5.13.0"
-flake8 = "^7.0.0"
-mypy = "^1.9.0"
-pytest = "^8.0.0"
-pytest-asyncio = "^0.23.0"
-
-# ---------------------------------------------------------------------------
-# Poetry workspace members
-# Each server lives in its own sub-directory with its own pyproject.toml.
-# Run `poetry install` from each sub-directory to install that server's deps.
-# ---------------------------------------------------------------------------
-# Members:
-#   servers/research-server
-#   servers/system-server
-#   servers/voice-server
+pytest = "^8.3.4"
+black = "^24.10.0"
+mypy = "^1.13.0"
+ruff = "^0.8.4"
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
+requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
-[tool.poetry.requires-plugins]
-poetry-plugin-export = ">=1.8"
-
-[tool.poe.tasks]
-export = "poetry export --without dev --without-hashes -f requirements.txt -o requirements.txt"
-test-unit = "poetry run pytest -s --cov-report term-missing --cov=. tests/unit"
-run-local = "python -m http.server 8000 --directory frontend"
-
-[tool.coverage.run]
-branch = true
-source = ["src"]
-omit = [
-    "app.py",
-    "cdk/*",
-    "tests/*",
-    "dev_test_harness.py",
-    "noxfile.py",
-    "**/__init__.py"
-]
-
-[tool.coverage.report]
-show_missing = true
-skip_covered = false
-exclude_also = [
-    "def __repr__",
-    "if self.debug:",
-    "if settings.DEBUG",
-    "raise AssertionError",
-    "raise NotImplementedError",
-    "if 0:",
-    "if __name__ == .__main__.:",
-    "if TYPE_CHECKING:",
-    "class .*\\bProtocol\\):",
-    "@(abc\\.)?abstractmethod",
-]
-omit = [
-    "**/__init__.py",
-    "**/context.py",
-    "**/tests/*",
-    "**/__future/*",
-    "**/noxfile.py",
-    "**/setup.py",
-    "**/dev_test_harness.py",
-]
-
-[tool.pytest.ini_options]
-minversion = "6.0"
-pythonpath = ["src"]
-addopts = "-ra -sql --junitxml=junit.xml"
-markers = [
-    "slow: marks tests as slow (select with '-m \"not slow\"')",
-    "serial"
-]
-testpaths = [
-    "tests/unit",
-    "tests/integration"
-]
-
 [tool.black]
-line-length = 79
+line-length = 88
 target-version = ["py312"]
-extend-exclude = '''
-/(
-    |  .*\/deps\/*  # Exclude dependencies
-)/
-'''
 
-[tool.isort]
-profile = "black"
-py_version = 312
-line_length = 79
-wrap_length = 0
-multi_line_output = 3
-use_parentheses = true
-combine_as_imports = true
-include_trailing_comma = true
-group_by_package = true
-length_sort = true
-atomic = true
-only_sections = true
-import_heading_future = "Future"
-import_heading_stdlib = "Standard Library"
-import_heading_firstparty = "My Modules"
-import_heading_thirdparty = "Third Party"
-import_heading_localfolder = "Local Modules"
-known_localfolder = "tests"
-virtual_env = ".venv"
-skip = [".layer", ".nox", ".venv", "cdk.out"]
-src_paths = ["src", "cdk", "tests"]
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
