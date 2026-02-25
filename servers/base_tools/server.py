@@ -1,18 +1,22 @@
 """servers/base_tools/server.py
 
 FastMCP server providing base tools for brAIniac chatbot.
-Exposes time and mock web search capabilities via MCP protocol.
+Exposes time and real DDG web search capabilities via MCP protocol.
 """
 
 from __future__ import annotations
 
 # Standard Library
 import json
-from typing import Any
+import logging
 from datetime import datetime
+from typing import Any
 
 # Third-Party Libraries
+from ddgs import DDGS
 from fastmcp import FastMCP
+
+logger = logging.getLogger(__name__)
 
 # Initialize FastMCP server with descriptive instructions
 mcp: FastMCP = FastMCP(
@@ -42,49 +46,33 @@ def get_current_time() -> str:
 
 @mcp.tool()
 def web_search(query: str, max_results: int = 5) -> str:
-    """Perform a web search for the given query.
+    """Search the web for current real-world information.
 
-    This is a mock implementation for Phase 1. In future phases,
-    this will be replaced with a real SearXNG container integration.
+    Uses DuckDuckGo (DDG) in-process — no API key required.
 
     Args:
         query: The search query string.
         max_results: Maximum number of results to return (default 5).
 
     Returns:
-        JSON string containing mock search results.
+        JSON string containing search results with title, url, and snippet
+        fields, or an error dict on failure.
     """
-    # Mock search results for Phase 1
-    mock_results: list[dict[str, Any]] = [
-        {
-            "title": f"Mock Result 1 for: {query}",
-            "url": "https://example.com/result1",
-            "snippet": (
-                f"This is a placeholder search result for '{query}'. "
-                "In Phase 2, this will be replaced with real SearXNG integration."
-            ),
-        },
-        {
-            "title": f"Mock Result 2 for: {query}",
-            "url": "https://example.com/result2",
-            "snippet": (
-                "Another mock result demonstrating the tool interface. "
-                "The LLM can parse this structure and provide answers."
-            ),
-        },
-    ]
-
-    # Limit results based on max_results parameter
-    limited_results = mock_results[:max_results]
-
-    result: dict[str, Any] = {
-        "query": query,
-        "results_count": len(limited_results),
-        "results": limited_results,
-        "note": "Mock implementation - will be replaced with SearXNG in Phase 2",
-    }
-
-    return json.dumps(result, indent=2, ensure_ascii=False)
+    try:
+        with DDGS() as ddgs:
+            hits = [
+                {"title": r["title"], "url": r["href"], "snippet": r["body"]}
+                for r in ddgs.text(query, max_results=max_results)
+            ]
+        result: dict[str, Any] = {
+            "query": query,
+            "results_count": len(hits),
+            "results": hits,
+        }
+        return json.dumps(result, indent=2, ensure_ascii=False)
+    except Exception as exc:
+        logger.error("[web_search] DDG failure: %s", exc, exc_info=True)
+        return json.dumps({"error": str(exc)})
 
 
 if __name__ == "__main__":
