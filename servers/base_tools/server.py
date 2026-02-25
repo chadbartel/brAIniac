@@ -6,10 +6,12 @@ Exposes time and mock web search capabilities via MCP protocol.
 
 from __future__ import annotations
 
+# Standard Library
 import json
-from datetime import datetime
 from typing import Any
+from datetime import datetime
 
+# Third-Party Libraries
 from fastmcp import FastMCP
 
 # Initialize FastMCP server with descriptive instructions

@@ -6,10 +6,13 @@ Tests end-to-end workflows and component interactions.
 
 from __future__ import annotations
 
+# Standard Library
 from unittest.mock import Mock, patch
 
+# Third-Party Libraries
 import pytest
 
+# Local Modules
 from core.chat import ChatEngine
 from core.memory import RollingMemory
 

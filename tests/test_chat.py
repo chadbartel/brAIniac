@@ -6,8 +6,10 @@ Tests chat loop, Ollama integration (mocked), and tool execution.
 
 from __future__ import annotations
 
+# Standard Library
 from unittest.mock import Mock, patch
 
+# Local Modules
 from core.chat import ChatEngine
 
 
@@ -93,6 +95,7 @@ class TestChatEngine:
         result = engine.execute_tool("get_current_time", {})
 
         # Should return JSON string
+        # Standard Library
         import json
 
         data = json.loads(result)
@@ -106,6 +109,7 @@ class TestChatEngine:
         engine = ChatEngine()
         result = engine.execute_tool("web_search", {"query": "Python testing"})
 
+        # Standard Library
         import json
 
         data = json.loads(result)
@@ -120,6 +124,7 @@ class TestChatEngine:
         engine = ChatEngine()
         result = engine.execute_tool("unknown_tool", {})
 
+        # Standard Library
         import json
 
         data = json.loads(result)

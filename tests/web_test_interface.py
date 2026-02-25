@@ -6,13 +6,16 @@ Provides interactive testing of chat engine, memory management, and tools.
 
 from __future__ import annotations
 
-import json
+# Standard Library
 import os
 import sys
+import json
 from unittest.mock import Mock, patch
 
+# Third-Party Libraries
 import gradio as gr
 
+# Local Modules
 from core.chat import ChatEngine
 from core.memory import RollingMemory
 

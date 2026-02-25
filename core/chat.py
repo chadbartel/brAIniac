@@ -6,14 +6,17 @@ Handles user input, LLM interaction, tool calling, and response generation.
 
 from __future__ import annotations
 
+# Standard Library
+import os
 import json
 import logging
-import os
 from typing import Any
 
+# Third-Party Libraries
 import ollama
 from ollama import Client
 
+# Local Modules
 from core.memory import RollingMemory
 
 # Configure logging
@@ -106,6 +109,7 @@ Be concise, direct, and helpful. When you need current information or the time, 
         # Mock tool execution for Phase 1
         # TODO: Replace with actual FastMCP client calls in Phase 2
         if tool_name == "get_current_time":
+            # Standard Library
             from datetime import datetime
 
             now = datetime.now()
