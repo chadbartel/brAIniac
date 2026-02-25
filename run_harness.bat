@@ -9,7 +9,7 @@
 ::
 :: Environment variables (optional):
 ::   OLLAMA_BASE_URL  — Ollama host URL  (default: http://localhost:11434)
-::   OLLAMA_MODEL     — Model name       (default: llama3.2:3b)
+::   OLLAMA_MODEL     — Model name       (default: llama3.1:8b-instruct-q4_K_M)
 ::   HARNESS_PORT     — Gradio port      (default: 7861)
 
 setlocal
@@ -20,7 +20,7 @@ if not "%~2"=="" set HARNESS_PORT=%~2
 
 :: ── Defaults ─────────────────────────────────────────────────────────────────
 if not defined OLLAMA_BASE_URL set OLLAMA_BASE_URL=http://localhost:11434
-if not defined OLLAMA_MODEL    set OLLAMA_MODEL=llama3.2:3b
+if not defined OLLAMA_MODEL    set OLLAMA_MODEL=llama3.1:8b-instruct-q4_K_M
 if not defined HARNESS_PORT    set HARNESS_PORT=7861
 
 echo.
