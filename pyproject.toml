@@ -39,6 +39,16 @@ target-version = ["py312"]
 line-length = 88
 target-version = "py312"
 
+[tool.isort]
+profile = "black"
+line_length = 88
+known_first_party = ["core", "servers"]
+sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+import_heading_stdlib = "Standard Library"
+import_heading_thirdparty = "Third-Party Libraries"
+import_heading_firstparty = "Local Modules"
+length_sort = true
+
 [tool.mypy]
 python_version = "3.12"
 warn_return_any = true
