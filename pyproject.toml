@@ -25,6 +25,7 @@ black = "^26.1.0"
 mypy = "^1.19.1"
 ruff = "^0.15.2"
 gradio = "^6.6.0"
+isort = "^8.0.0"
 
 [build-system]
 requires = ["poetry-core"]

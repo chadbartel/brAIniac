@@ -1182,6 +1182,21 @@ files = [
 ]
 
 [[package]]
+name = "isort"
+version = "8.0.0"
+description = "A Python utility / library to sort Python imports."
+optional = false
+python-versions = ">=3.10.0"
+groups = ["dev"]
+files = [
+    {file = "isort-8.0.0-py3-none-any.whl", hash = "sha256:184916a933041c7cf718787f7e52064f3c06272aff69a5cb4dc46497bd8911d9"},
+    {file = "isort-8.0.0.tar.gz", hash = "sha256:fddea59202f231e170e52e71e3510b99c373b6e571b55d9c7b31b679c0fed47c"},
+]
+
+[package.extras]
+colors = ["colorama"]
+
+[[package]]
 name = "jaraco-classes"
 version = "3.4.0"
 description = "Utility functions for Python class constructs"
@@ -3588,4 +3603,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = "~3.12"
-content-hash = "822eb2872e24a87c34bb9dcd9d28fe65fa639d6eb3c404c9f57c264fd400a66b"
+content-hash = "a3b85f69c2f6e61f6535579f791a7f02dae2fdb3a06a1cbb95801bc36fe11bcb"
