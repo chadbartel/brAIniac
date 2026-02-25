@@ -45,7 +45,9 @@ class TestIntegration:
 
         # Verify correct messages are preserved
         context = engine.memory.get_context()
-        messages_content = [msg["content"] for msg in context if msg["role"] != "system"]
+        messages_content = [
+            msg["content"] for msg in context if msg["role"] != "system"
+        ]
 
         # Should have messages 2, 3, 4 and their responses
         # (Message 1 should have rolled off)

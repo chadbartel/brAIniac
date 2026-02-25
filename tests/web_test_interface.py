@@ -167,9 +167,7 @@ def test_tool_search(query: str, max_results: int) -> str:
     return formatted
 
 
-def test_memory_operations(
-    operation: str, num_messages: int, max_window: int
-) -> str:
+def test_memory_operations(operation: str, num_messages: int, max_window: int) -> str:
     """Test memory operations with various configurations.
 
     Args:
@@ -264,16 +262,14 @@ def create_interface() -> gr.Blocks:
     with gr.Blocks(
         title="brAIniac Test Suite",
     ) as interface:
-        gr.Markdown(
-            """
+        gr.Markdown("""
         # 🧪 brAIniac Interactive Test Suite
         
         Test all components of the brAIniac chatbot system in your browser.
         
         **Note:** This interface uses a **mocked LLM backend** for testing purposes. 
         No actual Ollama connection is required.
-        """
-        )
+        """)
 
         with gr.Tabs():
             # Tab 1: Chat Interface
@@ -387,8 +383,7 @@ def create_interface() -> gr.Blocks:
 
             # Tab 4: System Info
             with gr.Tab("ℹ️ System Info"):
-                gr.Markdown(
-                    f"""
+                gr.Markdown(f"""
                 ### System Information
 
                 **brAIniac Version:** 0.1.0 (Phase 1)
@@ -427,17 +422,14 @@ def create_interface() -> gr.Blocks:
                 2. **Rolling Memory:** Send 25+ messages with default config, verify oldest roll off
                 3. **Tool Execution:** Test both tools in Tool Testing tab
                 4. **Memory Stress Test:** Memory Testing tab, add 50 messages with window size 5
-                """
-                )
+                """)
 
-        gr.Markdown(
-            """
+        gr.Markdown("""
         ---
         
         **brAIniac** - Local-first, uncensored AI chatbot optimized for 8GB VRAM  
         📚 [Documentation](https://github.com/yourusername/brAIniac) | 🐛 [Report Issues](https://github.com/yourusername/brAIniac/issues)
-        """
-        )
+        """)
 
     return interface
 
