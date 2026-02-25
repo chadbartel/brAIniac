@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # Ollama service - handles all LLM inference
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.16.3
     container_name: brainiac-ollama
     restart: unless-stopped
     
