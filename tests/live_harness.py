@@ -19,10 +19,12 @@ import json
 import time
 import logging
 import urllib.request
+from datetime import datetime
 from typing import Any, Generator
 
 # Third-Party Libraries
 import gradio as gr
+from ddgs import DDGS
 from gradio.themes import Soft
 
 # Local Modules
@@ -36,6 +38,92 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Tool definitions (Ollama / OpenAI function-calling schema)
+# ---------------------------------------------------------------------------
+
+TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": "Get the current system date and time.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": (
+                "Search the web for current real-world information. "
+                "Use this for questions about current events, weather, prices, "
+                "or any information that may have changed recently."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query string.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return (default 5).",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+]
+
+
+def _execute_tool(name: str, arguments: dict[str, Any]) -> str:
+    """Execute a named tool and return its JSON-encoded result.
+
+    Uses in-process DDG for web_search (per architecture §4.4) so the
+    harness never depends on the research-server SSE proxy being alive.
+
+    Args:
+        name: Tool function name (``get_current_time`` or ``web_search``).
+        arguments: Parsed arguments dict from the model’s tool call.
+
+    Returns:
+        JSON-encoded result string, or an error dict on failure.
+    """
+    logger.info("[tool] executing %s with args %s", name, arguments)
+
+    if name == "get_current_time":
+        now = datetime.now()
+        return json.dumps(
+            {
+                "iso_format": now.isoformat(),
+                "readable": now.strftime("%A, %B %d, %Y at %I:%M:%S %p"),
+                "timezone": "Local system time",
+            }
+        )
+
+    if name == "web_search":
+        query: str = arguments.get("query", "")
+        max_results: int = int(arguments.get("max_results", 5))
+        try:
+            with DDGS() as ddgs:
+                hits = [
+                    {"title": r["title"], "url": r["href"], "snippet": r["body"]}
+                    for r in ddgs.text(query, max_results=max_results)
+                ]
+            return json.dumps(
+                {"query": query, "results_count": len(hits), "results": hits},
+                ensure_ascii=False,
+            )
+        except Exception as exc:
+            logger.error("[web_search] DDG failure: %s", exc, exc_info=True)
+            return json.dumps({"error": str(exc)})
+
+    return json.dumps({"error": f"Unknown tool: {name}"})
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -257,29 +345,73 @@ def chat_stream(
             if role in ("user", "assistant") and content:
                 _session.engine.memory.add_message(role, content)
 
-        # Use the Ollama client directly for streaming.
         _session.engine.memory.add_message("user", message)
-        context = _session.engine.memory.get_context()
+        context: list[dict[str, Any]] = _session.engine.memory.get_context()
 
-        accumulated = ""
-        stream = _session.engine.client.chat(
+        # ------------------------------------------------------------------
+        # Pass 1 (non-streaming): let the model decide if it needs tools.
+        # Small models don't reliably emit tool-call JSON mid-stream, so we
+        # do a quick non-streaming probe first, execute any requested tools,
+        # then stream the final synthesis response.
+        # ------------------------------------------------------------------
+        first_resp = _session.engine.client.chat(
             model=_session.model,
             messages=context,
-            stream=True,
+            tools=TOOLS,
         )
+        first_msg = first_resp.message
+        tool_calls = first_msg.tool_calls or []
 
-        for chunk in stream:
-            delta: str = (
-                chunk.get("message", {}).get("content", "")
-                if isinstance(chunk, dict)
-                else getattr(getattr(chunk, "message", None), "content", "") or ""
+        if tool_calls:
+            # Append the model's tool-call decision to context.
+            context.append(
+                {
+                    "role": "assistant",
+                    "content": first_msg.content or "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": dict(tc.function.arguments),
+                            }
+                        }
+                        for tc in tool_calls
+                    ],
+                }
             )
-            accumulated += delta
+            # Execute every requested tool and append results.
+            for tc in tool_calls:
+                tool_result = _execute_tool(
+                    tc.function.name, dict(tc.function.arguments)
+                )
+                context.append({"role": "tool", "content": tool_result})
+
+            # ------------------------------------------------------------------
+            # Pass 2 (streaming): synthesise the final answer with tool results
+            # injected into context.
+            # ------------------------------------------------------------------
+            accumulated = ""
+            stream = _session.engine.client.chat(
+                model=_session.model,
+                messages=context,
+                stream=True,
+            )
+            for chunk in stream:
+                delta: str = (
+                    chunk.get("message", {}).get("content", "")
+                    if isinstance(chunk, dict)
+                    else getattr(getattr(chunk, "message", None), "content", "") or ""
+                )
+                accumulated += delta
+                yield accumulated
+
+        else:
+            # No tools needed — yield the first-pass response directly.
+            accumulated = _str_content(first_msg.content)
             yield accumulated
 
         elapsed = time.perf_counter() - t0
-        # Append a subtle timing note that fades into the response.
-        yield accumulated + f"\n\n<sub>⏱ {elapsed:.2f}s</sub>"
+        yield accumulated + f"\n\n<sub>\u23f1 {elapsed:.2f}s</sub>"
 
         # Persist the final assistant message in engine memory.
         _session.engine.memory.add_message("assistant", accumulated)
