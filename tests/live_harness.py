@@ -25,6 +25,7 @@ import sys
 import json
 import time
 import logging
+import urllib.parse
 import urllib.request
 from typing import Any, Generator
 from datetime import datetime
@@ -63,13 +64,37 @@ TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_weather",
+            "description": (
+                "Get the current weather and multi-day forecast for a location. "
+                "Use this for ANY question about weather conditions, temperature, "
+                "rain, wind, or forecasts — current or future."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "City or location name (e.g. 'Seattle', 'London', 'New York').",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "Number of forecast days to return: 1 (today only), 2 (today + tomorrow), or 3 (3-day). Default 2.",
+                    },
+                },
+                "required": ["location"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "web_search",
             "description": (
                 "Search the web for factual, real-time, or current information. "
-                "ONLY call this for questions that require up-to-date facts such as "
-                "current weather, news, prices, sports scores, general knowledge, "
-                "math, coding, or recent events. Do NOT call this for greetings, "
-                "casual conversation, opinions, or creative writing."
+                "Use for news, prices, sports scores, recent events, coding questions, "
+                "and general knowledge. Do NOT use for weather — use get_weather instead. "
+                "Do NOT use for greetings, casual conversation, or creative writing."
             ),
             "parameters": {
                 "type": "object",
@@ -98,7 +123,7 @@ def _execute_tool(name: str, arguments: dict[str, Any]) -> str:
 
     Args:
         name: Tool function name (``get_current_time`` or ``web_search``).
-        arguments: Parsed arguments dict from the model’s tool call.
+        arguments: Parsed arguments dict from the model's tool call.
 
     Returns:
         JSON-encoded result string, or an error dict on failure.
@@ -114,6 +139,45 @@ def _execute_tool(name: str, arguments: dict[str, Any]) -> str:
                 "timezone": "Local system time",
             }
         )
+
+    if name == "get_weather":
+        location: str = str(arguments.get("location", "Seattle"))
+        days_raw = arguments.get("days", 2)
+        if isinstance(days_raw, dict):
+            days_raw = 2
+        days: int = max(1, min(3, int(days_raw)))
+        try:
+            url = f"https://wttr.in/{urllib.parse.quote(location)}?format=j1"
+            req = urllib.request.Request(url, headers={"User-Agent": "brAIniac/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data: dict[str, Any] = json.loads(resp.read())
+            current = data["current_condition"][0]
+            day_labels = ["today", "tomorrow", "day_after_tomorrow"]
+            result: dict[str, Any] = {
+                "location": location,
+                "current": {
+                    "temp_f": int(current["temp_F"]),
+                    "feels_like_f": int(current["FeelsLikeF"]),
+                    "condition": current["weatherDesc"][0]["value"],
+                    "humidity_pct": int(current["humidity"]),
+                    "wind_mph": int(current["windspeedMiles"]),
+                    "wind_dir": current["winddir16Point"],
+                },
+                "forecast": [
+                    {
+                        "day": day_labels[i] if i < len(day_labels) else f"day_{i}",
+                        "date": day["date"],
+                        "high_f": int(day["maxtempF"]),
+                        "low_f": int(day["mintempF"]),
+                        "condition": day["hourly"][4]["weatherDesc"][0]["value"],
+                    }
+                    for i, day in enumerate(data["weather"][:days])
+                ],
+            }
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as exc:
+            logger.error("[get_weather] wttr.in failure: %s", exc, exc_info=True)
+            return json.dumps({"error": str(exc)})
 
     if name == "web_search":
         query: str = str(arguments.get("query", ""))
@@ -189,6 +253,26 @@ DEFAULT_OLLAMA_HOST: str = (
 DEFAULT_MODEL: str = os.environ.get("OLLAMA_MODEL", "llama3.1:8b-instruct-q4_K_M")
 DEFAULT_MAX_CTX: int = 20
 HARNESS_PORT: int = int(os.environ.get("HARNESS_PORT", "7861"))
+
+# System prompt sent as the first message in every chat context.
+# Explicit tool-use rules prevent the model from answering real-time
+# queries from stale training data instead of calling the provided tools.
+SYSTEM_PROMPT: str = """\
+You are brAIniac, a helpful local AI assistant. Respond conversationally and \
+naturally. For greetings like "hello" or "how are you", reply warmly and briefly \
+as yourself — do not reference songs, trivia, or anything other than the greeting.
+
+Tool rules — follow these without exception:
+1. ALWAYS call `get_current_time` when the user asks what time or date it is.
+2. ALWAYS call `get_weather` for ANY question about weather — current conditions, \
+forecasts, temperature, rain, wind, or whether to wear a jacket.
+3. ALWAYS call `web_search` for news, sports scores, prices, or recent events.
+4. NEVER answer questions requiring current data from your training knowledge.
+5. For greetings, casual conversation, coding, or general knowledge that does NOT \
+require up-to-date facts, answer directly — no tools needed.
+
+When you receive <tool_results> tags in a message, synthesise your answer \
+using ONLY those results. Do not contradict or ignore them."""
 
 # ---------------------------------------------------------------------------
 # Ollama probing helpers
@@ -373,13 +457,19 @@ def chat_stream(
         # Pass 1 (non-streaming): let the model declare which tools it needs.
         # We send the bare user message plus tool schemas so the model can
         # emit structured tool-call JSON cleanly without stream fragmentation.
+        # The system prompt is prepended here (not stored in rolling memory)
+        # so it is always present without consuming the context window budget.
         # ------------------------------------------------------------------
         _session.engine.memory.add_message("user", message)
         context: list[dict[str, Any]] = _session.engine.memory.get_context()
+        context_with_system: list[dict[str, Any]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            *context,
+        ]
 
         first_resp = _session.engine.client.chat(
             model=_session.model,
-            messages=context,
+            messages=context_with_system,
             tools=TOOLS,
         )
         first_msg = first_resp.message
@@ -413,7 +503,8 @@ def chat_stream(
 
             # Replace the last user message in context with the augmented one,
             # then stream a single synthesis call — no role="tool" messages.
-            synthesis_context = context[:-1] + [
+            # Keep the system prompt at the front so synthesis also obeys it.
+            synthesis_context = context_with_system[:-1] + [
                 {"role": "user", "content": augmented_user_msg}
             ]
 
