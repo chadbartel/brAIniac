@@ -9,8 +9,8 @@ from __future__ import annotations
 # Standard Library
 import json
 import logging
-from datetime import datetime
 from typing import Any
+from datetime import datetime
 
 # Third-Party Libraries
 from ddgs import DDGS

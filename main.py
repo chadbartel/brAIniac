@@ -7,17 +7,20 @@ Provides an interactive CLI interface using the Rich library.
 
 from __future__ import annotations
 
+# Standard Library
 import os
 import sys
 from typing import NoReturn
 
+# Third-Party Libraries
 from dotenv import load_dotenv
+from rich.panel import Panel
+from rich.theme import Theme
+from rich.prompt import Prompt
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.prompt import Prompt
-from rich.theme import Theme
 
+# Local Modules
 from core.chat import ChatEngine
 
 # Load environment variables from .env file
@@ -125,7 +128,8 @@ def main() -> NoReturn:
     except Exception as exc:
         console.print(f"❌ Failed to initialize: {exc}", style="error")
         console.print(
-            "\nMake sure Ollama is running and the model is downloaded.", style="warning"
+            "\nMake sure Ollama is running and the model is downloaded.",
+            style="warning",
         )
         console.print(f"Try running: ollama pull {model}\n", style="info")
         sys.exit(1)

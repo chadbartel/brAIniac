@@ -1,3 +1,9 @@
+# Run from the project root so Docker Compose picks up .env automatically:
+#   docker compose -f docker/docker-compose.yml up
+#
+# All configurable values are read from the project-root .env file.
+# The only variable currently consumed here is OLLAMA_MODEL.
+
 services:
   # Ollama service - handles all LLM inference
   ollama:
@@ -38,6 +44,23 @@ services:
     networks:
       - brainiac-net
 
+  # One-shot init container: pulls OLLAMA_MODEL after Ollama is healthy.
+  # Exits with code 0 on success; brainiac-app waits for this to complete.
+  ollama-pull:
+    image: ollama/ollama:0.16.3
+    container_name: brainiac-ollama-pull
+    restart: "no"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    # ${OLLAMA_MODEL} is substituted from .env at compose parse time.
+    # The :-default ensures the compose file is valid even without .env.
+    command: ollama pull ${OLLAMA_MODEL:-llama3.1:8b-instruct-q4_K_M}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - brainiac-net
+
   # brAIniac application service
   brainiac-app:
     build:
@@ -46,15 +69,15 @@ services:
     container_name: brainiac-app
     restart: unless-stopped
     
-    # Connect to Ollama service
+    # Connect to Ollama service — values come from the project-root .env.
     environment:
       - OLLAMA_HOST=http://ollama:11434
-      - OLLAMA_MODEL=llama3.1:8b-instruct-q4_K_M
-    
-    # Wait for Ollama to be healthy before starting
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b-instruct-q4_K_M}
+
+    # Wait for the model pull to finish before starting the app.
     depends_on:
-      ollama:
-        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
     
     # Interactive mode for CLI
     stdin_open: true

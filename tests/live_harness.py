@@ -26,8 +26,8 @@ import json
 import time
 import logging
 import urllib.request
-from datetime import datetime
 from typing import Any, Generator
+from datetime import datetime
 
 # Third-Party Libraries
 import gradio as gr
@@ -168,9 +168,7 @@ def _str_content(content: None | str | list[dict[str, Any]]) -> str:
     if isinstance(content, str):
         return content
     # Multi-part content list — concatenate all text parts.
-    return " ".join(
-        part.get("text", "") for part in content if isinstance(part, dict)
-    )
+    return " ".join(part.get("text", "") for part in content if isinstance(part, dict))
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +179,13 @@ def _str_content(content: None | str | list[dict[str, Any]]) -> str:
 # .env file is always the authoritative configuration source.
 load_dotenv()
 
-DEFAULT_OLLAMA_HOST: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+# Support both OLLAMA_HOST (.env convention) and OLLAMA_BASE_URL (legacy).
+# OLLAMA_HOST takes priority; OLLAMA_BASE_URL is accepted as a fallback.
+DEFAULT_OLLAMA_HOST: str = (
+    os.environ.get("OLLAMA_HOST")
+    or os.environ.get("OLLAMA_BASE_URL")
+    or "http://localhost:11434"
+)
 DEFAULT_MODEL: str = os.environ.get("OLLAMA_MODEL", "llama3.1:8b-instruct-q4_K_M")
 DEFAULT_MAX_CTX: int = 20
 HARNESS_PORT: int = int(os.environ.get("HARNESS_PORT", "7861"))
@@ -396,9 +400,7 @@ def chat_stream(
                 result_json = _execute_tool(
                     tc.function.name, dict(tc.function.arguments)
                 )
-                injected_parts.append(
-                    f"[{tc.function.name} result]\n{result_json}"
-                )
+                injected_parts.append(f"[{tc.function.name} result]\n{result_json}")
 
             injected_context = "\n\n".join(injected_parts)
             augmented_user_msg = (
