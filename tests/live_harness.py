@@ -4,10 +4,17 @@ Live browser-based test harness for brAIniac.
 Connects to a real local Ollama instance and exposes an interactive
 Gradio chat UI with streaming responses, model switching, and diagnostics.
 
+Configuration is loaded from the project-root ``.env`` file via
+``python-dotenv``.  Recognised environment variables:
+
+- ``OLLAMA_BASE_URL``   — Ollama host (default: ``http://localhost:11434``)
+- ``OLLAMA_MODEL``      — Model name  (default: ``llama3.1:8b-instruct-q4_K_M``)
+- ``HARNESS_PORT``      — Gradio port (default: ``7861``)
+
 Run with:
-    poetry run python tests/live_harness.py
-    # or on Windows:
-    run_harness.bat
+    python run_harness.py          # recommended — loads .env automatically
+    # or directly:
+    python tests/live_harness.py
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from typing import Any, Generator
 # Third-Party Libraries
 import gradio as gr
 from ddgs import DDGS
+from dotenv import load_dotenv
 from gradio.themes import Soft
 
 # Local Modules
@@ -57,9 +65,11 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "web_search",
             "description": (
-                "Search the web for current real-world information. "
-                "Use this for questions about current events, weather, prices, "
-                "or any information that may have changed recently."
+                "Search the web for factual, real-time, or current information. "
+                "ONLY call this for questions that require up-to-date facts such as "
+                "current weather, news, prices, sports scores, general knowledge, "
+                "math, coding, or recent events. Do NOT call this for greetings, "
+                "casual conversation, opinions, or creative writing."
             ),
             "parameters": {
                 "type": "object",
@@ -106,8 +116,13 @@ def _execute_tool(name: str, arguments: dict[str, Any]) -> str:
         )
 
     if name == "web_search":
-        query: str = arguments.get("query", "")
-        max_results: int = int(arguments.get("max_results", 5))
+        query: str = str(arguments.get("query", ""))
+        # Guard against llama3.2:3b passing the parameter schema dict as the
+        # value instead of a plain integer.
+        max_results_raw = arguments.get("max_results", 5)
+        if isinstance(max_results_raw, dict):
+            max_results_raw = max_results_raw.get("max_results", 5)
+        max_results: int = int(max_results_raw)
         try:
             with DDGS() as ddgs:
                 hits = [
@@ -161,6 +176,11 @@ def _str_content(content: None | str | list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 # Constants / defaults
 # ---------------------------------------------------------------------------
+
+# Load .env before reading any os.environ values so that the project-root
+# .env file is always the authoritative configuration source.
+load_dotenv()
+
 DEFAULT_OLLAMA_HOST: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 DEFAULT_MODEL: str = os.environ.get("OLLAMA_MODEL", "llama3.1:8b-instruct-q4_K_M")
 DEFAULT_MAX_CTX: int = 20
@@ -345,15 +365,14 @@ def chat_stream(
             if role in ("user", "assistant") and content:
                 _session.engine.memory.add_message(role, content)
 
+        # ------------------------------------------------------------------
+        # Pass 1 (non-streaming): let the model declare which tools it needs.
+        # We send the bare user message plus tool schemas so the model can
+        # emit structured tool-call JSON cleanly without stream fragmentation.
+        # ------------------------------------------------------------------
         _session.engine.memory.add_message("user", message)
         context: list[dict[str, Any]] = _session.engine.memory.get_context()
 
-        # ------------------------------------------------------------------
-        # Pass 1 (non-streaming): let the model decide if it needs tools.
-        # Small models don't reliably emit tool-call JSON mid-stream, so we
-        # do a quick non-streaming probe first, execute any requested tools,
-        # then stream the final synthesis response.
-        # ------------------------------------------------------------------
         first_resp = _session.engine.client.chat(
             model=_session.model,
             messages=context,
@@ -363,37 +382,43 @@ def chat_stream(
         tool_calls = first_msg.tool_calls or []
 
         if tool_calls:
-            # Append the model's tool-call decision to context.
-            context.append(
-                {
-                    "role": "assistant",
-                    "content": first_msg.content or "",
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": dict(tc.function.arguments),
-                            }
-                        }
-                        for tc in tool_calls
-                    ],
-                }
-            )
-            # Execute every requested tool and append results.
+            # ------------------------------------------------------------------
+            # Pre-injection pattern (architecture §4.4): small quantized models
+            # do not reliably act on role="tool" response messages — they see
+            # the data but revert to training-data answers anyway.
+            #
+            # Instead, execute every requested tool and embed all results as
+            # plain-text context directly inside the user turn.  The model then
+            # receives a single, self-contained prompt it cannot ignore.
+            # ------------------------------------------------------------------
+            injected_parts: list[str] = []
             for tc in tool_calls:
-                tool_result = _execute_tool(
+                result_json = _execute_tool(
                     tc.function.name, dict(tc.function.arguments)
                 )
-                context.append({"role": "tool", "content": tool_result})
+                injected_parts.append(
+                    f"[{tc.function.name} result]\n{result_json}"
+                )
 
-            # ------------------------------------------------------------------
-            # Pass 2 (streaming): synthesise the final answer with tool results
-            # injected into context.
-            # ------------------------------------------------------------------
+            injected_context = "\n\n".join(injected_parts)
+            augmented_user_msg = (
+                f"<tool_results>\n{injected_context}\n</tool_results>\n\n"
+                f"Using ONLY the tool results above, answer the following "
+                f"question. Do not say you lack access to real-time data — "
+                f"the data has already been retrieved for you.\n\n"
+                f"Question: {message}"
+            )
+
+            # Replace the last user message in context with the augmented one,
+            # then stream a single synthesis call — no role="tool" messages.
+            synthesis_context = context[:-1] + [
+                {"role": "user", "content": augmented_user_msg}
+            ]
+
             accumulated = ""
             stream = _session.engine.client.chat(
                 model=_session.model,
-                messages=context,
+                messages=synthesis_context,
                 stream=True,
             )
             for chunk in stream:
@@ -406,7 +431,7 @@ def chat_stream(
                 yield accumulated
 
         else:
-            # No tools needed — yield the first-pass response directly.
+            # No tools needed — yield the Pass 1 response directly.
             accumulated = _str_content(first_msg.content)
             yield accumulated
 
