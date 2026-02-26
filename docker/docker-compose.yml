@@ -45,16 +45,18 @@ services:
       - brainiac-net
 
   # One-shot init container: pulls OLLAMA_MODEL after Ollama is healthy.
-  # Exits with code 0 on success; brainiac-app waits for this to complete.
+  # Mounts docker/pull_model.py (stdlib-only) and runs it against the
+  # ollama service REST API.  Exits 0 on success.
   ollama-pull:
-    image: ollama/ollama:0.16.3
+    image: python:3.12-slim
     container_name: brainiac-ollama-pull
     restart: "no"
     environment:
       - OLLAMA_HOST=http://ollama:11434
-    # ${OLLAMA_MODEL} is substituted from .env at compose parse time.
-    # The :-default ensures the compose file is valid even without .env.
-    command: ollama pull ${OLLAMA_MODEL:-llama3.1:8b-instruct-q4_K_M}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b-instruct-q4_K_M}
+    volumes:
+      - ./pull_model.py:/pull_model.py:ro
+    command: python /pull_model.py
     depends_on:
       ollama:
         condition: service_healthy
