@@ -146,37 +146,99 @@ def _execute_tool(name: str, arguments: dict[str, Any]) -> str:
         if isinstance(days_raw, dict):
             days_raw = 2
         days: int = max(1, min(3, int(days_raw)))
-        try:
-            url = f"https://wttr.in/{urllib.parse.quote(location)}?format=j1"
+
+        # WMO weather interpretation codes → human-readable condition string.
+        _WMO: dict[int, str] = {
+            0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+            45: "Fog", 48: "Icy fog",
+            51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle",
+            61: "Light rain", 63: "Rain", 65: "Heavy rain",
+            71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains",
+            80: "Light showers", 81: "Showers", 82: "Heavy showers",
+            85: "Snow showers", 86: "Heavy snow showers",
+            95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Heavy thunderstorm with hail",
+        }
+
+        def _wmo_desc(code: int) -> str:
+            return _WMO.get(code, f"WMO code {code}")
+
+        def _deg_to_compass(deg: float) -> str:
+            dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE",
+                    "S","SSW","SW","WSW","W","WNW","NW","NNW"]
+            return dirs[round(deg / 22.5) % 16]
+
+        def _fetch(url: str) -> dict[str, Any]:
             req = urllib.request.Request(url, headers={"User-Agent": "brAIniac/1.0"})
             with urllib.request.urlopen(req, timeout=10) as resp:
-                data: dict[str, Any] = json.loads(resp.read())
-            current = data["current_condition"][0]
+                return json.loads(resp.read())  # type: ignore[return-value]
+
+        try:
+            # Step 1 — geocode the city name to lat/lon via Open-Meteo's
+            # geocoding API (free, no key required).
+            geo_url = (
+                "https://geocoding-api.open-meteo.com/v1/search?"
+                + urllib.parse.urlencode({"name": location, "count": 1, "format": "json"})
+            )
+            geo = _fetch(geo_url)
+            if not geo.get("results"):
+                return json.dumps({"error": f"Location not found: {location!r}"})
+            hit = geo["results"][0]
+            lat: float = hit["latitude"]
+            lon: float = hit["longitude"]
+            resolved_name: str = hit.get("name", location)
+            country: str = hit.get("country", "")
+
+            # Step 2 — fetch current conditions + daily forecast via
+            # Open-Meteo forecast API (free, no key required).
+            forecast_url = (
+                "https://api.open-meteo.com/v1/forecast?"
+                + urllib.parse.urlencode({
+                    "latitude": lat,
+                    "longitude": lon,
+                    "current": ",".join([
+                        "temperature_2m", "apparent_temperature", "weathercode",
+                        "windspeed_10m", "winddirection_10m", "relativehumidity_2m",
+                    ]),
+                    "daily": ",".join([
+                        "temperature_2m_max", "temperature_2m_min",
+                        "weathercode", "precipitation_sum",
+                    ]),
+                    "temperature_unit": "fahrenheit",
+                    "wind_speed_unit": "mph",
+                    "precipitation_unit": "inch",
+                    "timezone": "auto",
+                    "forecast_days": days,
+                })
+            )
+            wx = _fetch(forecast_url)
+            cur = wx["current"]
+            daily = wx["daily"]
             day_labels = ["today", "tomorrow", "day_after_tomorrow"]
             result: dict[str, Any] = {
-                "location": location,
+                "location": f"{resolved_name}, {country}".strip(", "),
                 "current": {
-                    "temp_f": int(current["temp_F"]),
-                    "feels_like_f": int(current["FeelsLikeF"]),
-                    "condition": current["weatherDesc"][0]["value"],
-                    "humidity_pct": int(current["humidity"]),
-                    "wind_mph": int(current["windspeedMiles"]),
-                    "wind_dir": current["winddir16Point"],
+                    "temp_f": round(cur["temperature_2m"]),
+                    "feels_like_f": round(cur["apparent_temperature"]),
+                    "condition": _wmo_desc(int(cur["weathercode"])),
+                    "humidity_pct": int(cur["relativehumidity_2m"]),
+                    "wind_mph": round(cur["windspeed_10m"]),
+                    "wind_dir": _deg_to_compass(float(cur["winddirection_10m"])),
                 },
                 "forecast": [
                     {
                         "day": day_labels[i] if i < len(day_labels) else f"day_{i}",
-                        "date": day["date"],
-                        "high_f": int(day["maxtempF"]),
-                        "low_f": int(day["mintempF"]),
-                        "condition": day["hourly"][4]["weatherDesc"][0]["value"],
+                        "date": daily["time"][i],
+                        "high_f": round(daily["temperature_2m_max"][i]),
+                        "low_f": round(daily["temperature_2m_min"][i]),
+                        "condition": _wmo_desc(int(daily["weathercode"][i])),
+                        "precip_in": round(daily["precipitation_sum"][i], 2),
                     }
-                    for i, day in enumerate(data["weather"][:days])
+                    for i in range(len(daily["time"]))
                 ],
             }
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:
-            logger.error("[get_weather] wttr.in failure: %s", exc, exc_info=True)
+            logger.error("[get_weather] Open-Meteo failure: %s", exc, exc_info=True)
             return json.dumps({"error": str(exc)})
 
     if name == "web_search":
@@ -254,6 +316,10 @@ DEFAULT_MODEL: str = os.environ.get("OLLAMA_MODEL", "llama3.1:8b-instruct-q4_K_M
 DEFAULT_MAX_CTX: int = 20
 HARNESS_PORT: int = int(os.environ.get("HARNESS_PORT", "7861"))
 
+# Backoff delays (seconds) between successive Ollama retry attempts.
+# Two retries = three total attempts: immediate → wait 1 s → wait 2 s → fail.
+_RETRY_DELAYS: tuple[float, ...] = (1.0, 2.0)
+
 # System prompt sent as the first message in every chat context.
 # Explicit tool-use rules prevent the model from answering real-time
 # queries from stale training data instead of calling the provided tools.
@@ -273,6 +339,56 @@ require up-to-date facts, answer directly — no tools needed.
 
 When you receive <tool_results> tags in a message, synthesise your answer \
 using ONLY those results. Do not contradict or ignore them."""
+
+# ---------------------------------------------------------------------------
+# Ollama retry helper
+# ---------------------------------------------------------------------------
+
+
+def _chat_with_retry(client: Any, **kwargs: Any) -> Any:
+    """Call ``client.chat`` with exponential backoff on transient failures.
+
+    Makes up to ``len(_RETRY_DELAYS) + 1`` total attempts.  Each failure
+    (except the last) logs a warning and sleeps for the next value in
+    ``_RETRY_DELAYS`` before retrying.  The final failure re-raises so the
+    caller's error path handles it normally.
+
+    Args:
+        client: Ollama ``Client`` instance.
+        **kwargs: Keyword arguments forwarded verbatim to ``client.chat``.
+
+    Returns:
+        The ``client.chat`` response object.
+
+    Raises:
+        Exception: Re-raises the last exception once all attempts are exhausted.
+    """
+    total_attempts: int = len(_RETRY_DELAYS) + 1
+    last_exc: Exception
+    for attempt in range(1, total_attempts + 1):
+        try:
+            return client.chat(**kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < total_attempts:
+                delay: float = _RETRY_DELAYS[attempt - 1]
+                logger.warning(
+                    "[ollama] attempt %d/%d failed (%s) — retrying in %.1fs…",
+                    attempt,
+                    total_attempts,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
+            else:
+                logger.error(
+                    "[ollama] all %d attempts exhausted: %s",
+                    total_attempts,
+                    exc,
+                    exc_info=True,
+                )
+    raise last_exc  # type: ignore[possibly-undefined]
+
 
 # ---------------------------------------------------------------------------
 # Ollama probing helpers
@@ -446,6 +562,8 @@ def chat_stream(
         # Normalise content through _str_content: Gradio's type="messages"
         # chatbot can return content as a list[dict] for multimodal turns,
         # which the Ollama Pydantic model rejects as not a valid string.
+        # Filter out any engine-injected system messages so we only use the
+        # single authoritative SYSTEM_PROMPT defined in this harness.
         _session.engine.memory.clear()
         for turn in history:
             role = turn.get("role", "")
@@ -453,23 +571,41 @@ def chat_stream(
             if role in ("user", "assistant") and content:
                 _session.engine.memory.add_message(role, content)
 
-        # ------------------------------------------------------------------
-        # Pass 1 (non-streaming): let the model declare which tools it needs.
-        # We send the bare user message plus tool schemas so the model can
-        # emit structured tool-call JSON cleanly without stream fragmentation.
-        # The system prompt is prepended here (not stored in rolling memory)
-        # so it is always present without consuming the context window budget.
-        # ------------------------------------------------------------------
+        # Build the full synthesis context (history + current user message).
+        # Exclude the engine's internal system message (role="system") to
+        # prevent a duplicate / conflicting system prompt in the context.
         _session.engine.memory.add_message("user", message)
-        context: list[dict[str, Any]] = _session.engine.memory.get_context()
+        history_messages: list[dict[str, Any]] = [
+            m
+            for m in _session.engine.memory.get_context()
+            if m.get("role") != "system"
+        ]
         context_with_system: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            *context,
+            *history_messages,
         ]
 
-        first_resp = _session.engine.client.chat(
+        # ------------------------------------------------------------------
+        # Pass 1 (non-streaming): TOOL SELECTION ONLY.
+        #
+        # CRITICAL: send ONLY [system, current_user_message] — no history.
+        #
+        # Prior turns whose assistant responses contain tool-result data
+        # (e.g. weather about Seattle) contaminate the tool-selection signal
+        # for subsequent unrelated questions (e.g. pygame code changes).
+        # Isolating Pass 1 to the current message ensures tool selection is
+        # driven solely by the user's *present* intent, not conversation
+        # history artefacts.  Full history is restored for synthesis below.
+        # ------------------------------------------------------------------
+        pass1_context: list[dict[str, Any]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": message},
+        ]
+
+        first_resp = _chat_with_retry(
+            _session.engine.client,
             model=_session.model,
-            messages=context_with_system,
+            messages=pass1_context,
             tools=TOOLS,
         )
         first_msg = first_resp.message
@@ -493,38 +629,94 @@ def chat_stream(
                 injected_parts.append(f"[{tc.function.name} result]\n{result_json}")
 
             injected_context = "\n\n".join(injected_parts)
-            augmented_user_msg = (
-                f"<tool_results>\n{injected_context}\n</tool_results>\n\n"
-                f"Using ONLY the tool results above, answer the following "
-                f"question. Do not say you lack access to real-time data — "
-                f"the data has already been retrieved for you.\n\n"
-                f"Question: {message}"
-            )
 
-            # Replace the last user message in context with the augmented one,
-            # then stream a single synthesis call — no role="tool" messages.
-            # Keep the system prompt at the front so synthesis also obeys it.
+            # Detect whether every tool call came back with an error dict so
+            # we can give the model truthful synthesis instructions.  Telling
+            # the model "the data has been retrieved" when the tool returned
+            # {"error": ...} creates a conflicting instruction that causes it
+            # to produce unhelpful "I'm unable to retrieve" apology responses.
+            all_errors: bool = all(
+                "error" in json.loads(p.split("\n", 1)[1])
+                for p in injected_parts
+                if "\n" in p
+            )
+            if all_errors:
+                synthesis_instruction = (
+                    f"<tool_results>\n{injected_context}\n</tool_results>\n\n"
+                    f"The tool call above returned an error — the external "
+                    f"service is temporarily unavailable. Inform the user "
+                    f"concisely that the service is temporarily unavailable "
+                    f"and suggest they try again in a moment. "
+                    f"Do NOT say you lack access to real-time data.\n\n"
+                    f"Question: {message}"
+                )
+            else:
+                synthesis_instruction = (
+                    f"<tool_results>\n{injected_context}\n</tool_results>\n\n"
+                    f"Using ONLY the tool results above, answer the following "
+                    f"question. Do not say you lack access to real-time data — "
+                    f"the data has already been retrieved for you.\n\n"
+                    f"Question: {message}"
+                )
+
+            # Replace the last user message in the full-history context with
+            # the augmented one, then stream synthesis.  Full history is used
+            # here (not pass1_context) so the model can produce a
+            # contextually coherent response even for follow-up questions.
             synthesis_context = context_with_system[:-1] + [
-                {"role": "user", "content": augmented_user_msg}
+                {"role": "user", "content": synthesis_instruction}
             ]
 
-            accumulated = ""
-            stream = _session.engine.client.chat(
-                model=_session.model,
-                messages=synthesis_context,
-                stream=True,
-            )
-            for chunk in stream:
-                delta: str = (
-                    chunk.get("message", {}).get("content", "")
-                    if isinstance(chunk, dict)
-                    else getattr(getattr(chunk, "message", None), "content", "") or ""
-                )
-                accumulated += delta
-                yield accumulated
+            # ------------------------------------------------------------------
+            # Pass 2 (streaming): synthesis with tool results injected.
+            # Retry the entire stream on failure so a transient Ollama hiccup
+            # does not surface as a hard error to the user.
+            # ------------------------------------------------------------------
+            total_attempts: int = len(_RETRY_DELAYS) + 1
+            last_stream_exc: Exception
+            for _attempt in range(1, total_attempts + 1):
+                try:
+                    accumulated = ""
+                    stream = _session.engine.client.chat(
+                        model=_session.model,
+                        messages=synthesis_context,
+                        stream=True,
+                    )
+                    for chunk in stream:
+                        delta: str = (
+                            chunk.get("message", {}).get("content", "")
+                            if isinstance(chunk, dict)
+                            else getattr(getattr(chunk, "message", None), "content", "") or ""
+                        )
+                        accumulated += delta
+                        yield accumulated
+                    break  # stream completed successfully — exit retry loop
+                except Exception as exc:
+                    last_stream_exc = exc
+                    if _attempt < total_attempts:
+                        delay = _RETRY_DELAYS[_attempt - 1]
+                        logger.warning(
+                            "[ollama-stream] attempt %d/%d failed (%s) — retrying in %.1fs…",
+                            _attempt,
+                            total_attempts,
+                            exc,
+                            delay,
+                        )
+                        time.sleep(delay)
+                    else:
+                        logger.error(
+                            "[ollama-stream] all %d attempts exhausted: %s",
+                            total_attempts,
+                            exc,
+                            exc_info=True,
+                        )
+                        raise last_stream_exc  # type: ignore[possibly-undefined]
 
         else:
-            # No tools needed — yield the Pass 1 response directly.
+            # ------------------------------------------------------------------
+            # No tools needed — yield Pass 1's response directly.
+            # Avoids a redundant second inference call for every simple reply.
+            # ------------------------------------------------------------------
             accumulated = _str_content(first_msg.content)
             yield accumulated
 
