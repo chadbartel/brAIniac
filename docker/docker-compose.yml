@@ -13,6 +13,12 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+    environment:
+      # Enable the new Ollama engine for proper CUDA tensor offloading.
+      # Without this, the old llama.cpp runner loads models onto CPU even
+      # when a GPU is present and detected.
+      - OLLAMA_NEW_ENGINE=true
     
     # Persist downloaded models
     volumes:
