@@ -9,6 +9,7 @@ from __future__ import annotations
 # Standard Library
 import json
 import logging
+import os
 from typing import Any
 
 # Third-Party Libraries
@@ -16,6 +17,7 @@ from ollama import Client
 
 # Local Modules
 from core.memory import RollingMemory
+from core.personality import PersonalityManager, PersonalityVectors
 
 # Configure logging
 logging.basicConfig(
@@ -34,48 +36,120 @@ class ChatEngine:
 
     def __init__(
         self,
-        model: str = "llama3.1:8b-instruct-q4_K_M",
-        ollama_host: str = "http://localhost:11434",
+        model: str | None = None,
+        ollama_host: str | None = None,
         max_context_messages: int = 20,
+        personality_vectors: PersonalityVectors | None = None,
     ) -> None:
         """Initialize the chat engine.
 
         Args:
-            model: Ollama model name (default: llama3.1:8b-instruct-q4_K_M).
-            ollama_host: Ollama API endpoint (default: http://localhost:11434).
+            model: Ollama model name. Falls back to the OLLAMA_MODEL env var,
+                then "llama3.1:8b-instruct-q4_K_M".
+            ollama_host: Ollama API endpoint. Falls back to the OLLAMA_BASE_URL
+                env var, then "http://localhost:11434".
             max_context_messages: Maximum messages in rolling context window.
+            personality_vectors: Pre-built PersonalityVectors instance. When
+                omitted, vectors are loaded from env vars via
+                ``PersonalityVectors.from_env()``.
         """
-        self.model = model
-        self.ollama_host = ollama_host
+        self.model = model or os.getenv("OLLAMA_MODEL", "llama3.1:8b-instruct-q4_K_M")
+        self.ollama_host = ollama_host or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         self.memory = RollingMemory(max_messages=max_context_messages)
 
         # Initialize Ollama client
-        self.client = Client(host=ollama_host)
+        self.client = Client(host=self.ollama_host)
 
         # Tool registry (will be populated by FastMCP server discovery)
         self.tools: dict[str, Any] = {}
 
-        # Set default system message
+        # Initialize PersonalityManager and inject the dynamic system prompt
+        vectors = personality_vectors or PersonalityVectors.from_env()
+        self.personality_manager = PersonalityManager(vectors)
         self._set_default_system_message()
 
+        # Register built-in Phase 1 tool schemas
+        self._register_default_tools()
+
         logger.info(
-            "ChatEngine initialized: model=%s, host=%s, max_messages=%d",
+            "ChatEngine initialized: model=%s, host=%s, max_messages=%d, "
+            "personality=snark=%.1f/verbosity=%.1f/empathy=%.1f",
             self.model,
             self.ollama_host,
             max_context_messages,
+            vectors.snark,
+            vectors.verbosity,
+            vectors.empathy,
         )
 
     def _set_default_system_message(self) -> None:
-        """Set the default system prompt for brAIniac."""
-        system_prompt = """You are brAIniac, a helpful, uncensored AI assistant running entirely on local hardware.
-
-You have two tools available:
-- get_current_time: call ONLY when the user explicitly asks for the current date or time.
-- web_search: call ONLY for questions requiring live or recent facts (weather, news, prices, sports scores, recent events, general knowledge, math, coding). Do NOT call it for greetings, casual conversation, or creative tasks.
-
-For everything else, answer directly from your own knowledge. Be concise and helpful.
-"""
+        """Set the system prompt by delegating to PersonalityManager."""
+        system_prompt = self.personality_manager.generate_system_prompt()
         self.memory.set_system_message(system_prompt)
+
+    def _register_default_tools(self) -> None:
+        """Register the built-in Phase 1 tool schemas with the engine."""
+        self.register_tools(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_current_time",
+                        "description": "Get the current local date and time.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": (
+                            "Search the web for current, real-world information such as "
+                            "weather, news, prices, sports scores, and general facts."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "required": ["query"],
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "The search query string.",
+                                },
+                                "max_results": {
+                                    "type": "integer",
+                                    "description": "Maximum number of results to return (default 5).",
+                                },
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": (
+                            "Get the current weather conditions for any city or location. "
+                            "Use this for questions about current weather, temperature, "
+                            "humidity, wind, or forecast."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "required": ["location"],
+                            "properties": {
+                                "location": {
+                                    "type": "string",
+                                    "description": "City name or location string (e.g. 'Seattle' or 'Paris, FR').",
+                                },
+                            },
+                        },
+                    },
+                },
+            ]
+        )
 
     def register_tools(self, tools: list[dict[str, Any]]) -> None:
         """Register available MCP tools for the LLM to use.
@@ -104,41 +178,22 @@ For everything else, answer directly from your own knowledge. Be concise and hel
         """
         logger.info("Tool call requested: %s with args %s", tool_name, arguments)
 
-        # Mock tool execution for Phase 1
-        # TODO: Replace with actual FastMCP client calls in Phase 2
+        # Route to the real FastMCP tool implementations in servers/base_tools.
+        # TODO: Replace with a proper FastMCP client in Phase 2.
         if tool_name == "get_current_time":
-            # Standard Library
-            from datetime import datetime
-
-            now = datetime.now()
-            result = {
-                "iso_format": now.isoformat(),
-                "readable": now.strftime("%A, %B %d, %Y at %I:%M:%S %p"),
-                "timezone": "Local system time",
-            }
-            return json.dumps(result)
+            from servers.base_tools.server import _get_current_time
+            return _get_current_time()
 
         elif tool_name == "web_search":
+            from servers.base_tools.server import _web_search
             query = arguments.get("query", "")
-            max_results = arguments.get("max_results", 5)
-            result = {
-                "query": query,
-                "results_count": 2,
-                "results": [
-                    {
-                        "title": f"Mock Result 1 for: {query}",
-                        "url": "https://example.com/result1",
-                        "snippet": f"Mock search result for '{query}'",
-                    },
-                    {
-                        "title": f"Mock Result 2 for: {query}",
-                        "url": "https://example.com/result2",
-                        "snippet": "Another mock result",
-                    },
-                ],
-                "note": "Mock implementation",
-            }
-            return json.dumps(result)
+            max_results = int(arguments.get("max_results", 5))
+            return _web_search(query=query, max_results=max_results)
+
+        elif tool_name == "get_weather":
+            from servers.base_tools.server import _get_weather
+            location = arguments.get("location", "")
+            return _get_weather(location=location)
 
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
@@ -163,23 +218,78 @@ For everything else, answer directly from your own knowledge. Be concise and hel
 
         logger.debug("Sending %d messages to LLM", len(context))
 
+        # Tool-call exchanges are kept in a local buffer for this turn only.
+        # They are not persisted to rolling memory to avoid context bloat.
+        turn_messages: list[dict[str, Any]] = list(context)
+        tool_schemas = list(self.tools.values()) if self.tools else None
+
         try:
-            # Call Ollama API
             response = self.client.chat(
                 model=self.model,
-                messages=context,
-                # Tools will be added in Phase 2 when we have proper MCP integration
-                # tools=list(self.tools.values()) if self.tools else None,
+                messages=turn_messages,
+                tools=tool_schemas,
             )
 
-            # Extract assistant response
-            assistant_message = response.get("message", {}).get("content", "")
+            # Agentic tool-call dispatch loop.
+            # If the model requests one or more tools, execute them and feed
+            # the results back until the model produces a plain text reply.
+            while True:
+                raw_msg = response["message"]
+                # getattr supports real Ollama Pydantic models (.tool_calls attr);
+                # plain dict mocks will return None (no such attribute) safely.
+                tool_calls = getattr(raw_msg, "tool_calls", None) or []
+
+                if not tool_calls:
+                    break
+
+                # Append the assistant's tool-call turn to the local buffer
+                turn_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                }
+                            }
+                            for tc in tool_calls
+                        ],
+                    }
+                )
+
+                # Execute each tool and add results to the local buffer
+                for tc in tool_calls:
+                    tool_result = self.execute_tool(
+                        tc.function.name,
+                        dict(tc.function.arguments) if tc.function.arguments else {},
+                    )
+                    logger.info(
+                        "Tool executed: %s → %s", tc.function.name, tool_result[:200]
+                    )
+                    turn_messages.append({"role": "tool", "content": tool_result})
+
+                # Ask the model to continue now that it has the tool results
+                response = self.client.chat(
+                    model=self.model,
+                    messages=turn_messages,
+                    tools=tool_schemas,
+                )
+
+            # Extract the final plain-text reply
+            raw_msg = response["message"]
+            assistant_message = (
+                getattr(raw_msg, "content", None)
+                or (raw_msg.get("content", "") if isinstance(raw_msg, dict) else "")
+                or ""
+            )
 
             if not assistant_message:
                 logger.warning("Empty response from LLM")
                 assistant_message = "I apologize, but I couldn't generate a response."
 
-            # Add assistant response to memory
+            # Persist only the final reply to rolling memory
             self.memory.add_message("assistant", assistant_message)
 
             logger.debug("Received response from LLM: %d chars", len(assistant_message))

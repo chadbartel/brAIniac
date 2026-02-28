@@ -24,7 +24,9 @@ class TestChatEngine:
         assert engine.model == "llama3.1:8b-instruct-q4_K_M"
         assert engine.ollama_host == "http://localhost:11434"
         assert engine.memory.max_messages == 20
-        assert engine.tools == {}
+        # Default tools are registered on init
+        assert "get_current_time" in engine.tools
+        assert "web_search" in engine.tools
 
         # Verify Ollama client was initialized
         mock_client_class.assert_called_once_with(host="http://localhost:11434")
@@ -84,7 +86,7 @@ class TestChatEngine:
 
         engine.register_tools(tools)
 
-        assert len(engine.tools) == 2
+        assert len(engine.tools) == 3  # 2 passed + get_weather registered at init
         assert "get_current_time" in engine.tools
         assert "web_search" in engine.tools
 
@@ -105,18 +107,27 @@ class TestChatEngine:
 
     @patch("core.chat.Client")
     def test_execute_tool_web_search(self, mock_client_class: Mock) -> None:
-        """Test executing the web_search tool."""
+        """Test executing the web_search tool calls the real server function."""
         engine = ChatEngine()
-        result = engine.execute_tool("web_search", {"query": "Python testing"})
 
         # Standard Library
         import json
+
+        fake_result = json.dumps({
+            "query": "Python testing",
+            "results_count": 1,
+            "results": [{"title": "Result", "url": "https://real.com", "snippet": "snippet"}],
+        })
+
+        with patch("servers.base_tools.server._web_search", return_value=fake_result):
+            result = engine.execute_tool("web_search", {"query": "Python testing"})
 
         data = json.loads(result)
         assert data["query"] == "Python testing"
         assert "results" in data
         assert len(data["results"]) > 0
-        assert "note" in data  # Mock implementation note
+        # No "note" key — mock implementation is gone
+        assert "note" not in data
 
     @patch("core.chat.Client")
     def test_execute_tool_unknown(self, mock_client_class: Mock) -> None:

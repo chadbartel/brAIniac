@@ -1,8 +1,8 @@
 """tests/test_base_tools.py
 
 Unit tests for the base_tools FastMCP server (servers/base_tools/server.py).
-Imports and tests the *actual* tool functions; DDG is mocked out so these
-tests are fully offline and deterministic.
+Imports and tests the *actual* tool functions; DDG and HTTP are mocked out so
+these tests are fully offline and deterministic.
 """
 
 from __future__ import annotations
@@ -18,12 +18,14 @@ import pytest
 # Local Modules — unwrap FastMCP's FunctionTool to get the plain Python callables
 from servers.base_tools.server import (
     get_current_time as _get_current_time_tool,
+    get_weather as _get_weather_tool,
     web_search as _web_search_tool,
 )
 
 # FunctionTool wraps the original function at `.fn`; import those for direct testing.
 get_current_time = _get_current_time_tool.fn
 web_search = _web_search_tool.fn
+get_weather = _get_weather_tool.fn
 
 # ---------------------------------------------------------------------------
 # Shared DDG mock factory
@@ -201,3 +203,126 @@ class TestWebSearch:
         with patch("servers.base_tools.server.DDGS", _ddgs_patch()):
             data = json.loads(web_search(query))
         assert data["query"] == query
+
+
+# ---------------------------------------------------------------------------
+# get_weather
+# ---------------------------------------------------------------------------
+
+# Reusable fake API payloads
+_FAKE_GEO_RESPONSE = json.dumps({
+    "results": [
+        {
+            "name": "Seattle",
+            "latitude": 47.6062,
+            "longitude": -122.3321,
+            "country": "United States",
+        }
+    ]
+}).encode()
+
+_FAKE_WEATHER_RESPONSE = json.dumps({
+    "current": {
+        "temperature_2m": 12.5,
+        "apparent_temperature": 10.0,
+        "relative_humidity_2m": 78,
+        "wind_speed_10m": 14.4,
+        "weather_code": 3,
+        "precipitation": 0.0,
+    }
+}).encode()
+
+_FAKE_EMPTY_GEO_RESPONSE = json.dumps({"results": []}).encode()
+
+
+def _make_urlopen_mock(responses: list[bytes]) -> MagicMock:
+    """Return a urlopen mock that yields successive byte payloads.
+
+    Each call to urlopen().__enter__().read() returns the next item in
+    *responses*, so the first call gets responses[0], the second gets
+    responses[1], etc.
+    """
+    call_count = 0
+
+    def _side_effect(url: str, timeout: int = 10) -> MagicMock:
+        nonlocal call_count
+        payload = responses[call_count]
+        call_count += 1
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=ctx)
+        ctx.__exit__ = MagicMock(return_value=False)
+        ctx.read.return_value = payload
+        return ctx
+
+    mock = MagicMock(side_effect=_side_effect)
+    return mock
+
+
+class TestGetWeather:
+    """Test suite for the get_weather Open-Meteo tool (HTTP mocked)."""
+
+    def test_returns_valid_json(self) -> None:
+        """get_weather must return a valid JSON string."""
+        mock_urlopen = _make_urlopen_mock([_FAKE_GEO_RESPONSE, _FAKE_WEATHER_RESPONSE])
+        with patch("servers.base_tools.server.urllib.request.urlopen", mock_urlopen):
+            result = get_weather("Seattle")
+        assert isinstance(json.loads(result), dict)
+
+    def test_has_required_fields(self) -> None:
+        """Response must contain all expected weather fields."""
+        mock_urlopen = _make_urlopen_mock([_FAKE_GEO_RESPONSE, _FAKE_WEATHER_RESPONSE])
+        with patch("servers.base_tools.server.urllib.request.urlopen", mock_urlopen):
+            data = json.loads(get_weather("Seattle"))
+        for field in (
+            "location", "condition", "temperature_c", "temperature_f",
+            "feels_like_c", "feels_like_f", "humidity_pct",
+            "wind_speed_kmh", "precipitation_mm", "source",
+        ):
+            assert field in data, f"Missing field: {field}"
+
+    def test_temperature_conversion(self) -> None:
+        """Fahrenheit values must be correctly converted from Celsius."""
+        mock_urlopen = _make_urlopen_mock([_FAKE_GEO_RESPONSE, _FAKE_WEATHER_RESPONSE])
+        with patch("servers.base_tools.server.urllib.request.urlopen", mock_urlopen):
+            data = json.loads(get_weather("Seattle"))
+        expected_f = round(12.5 * 9 / 5 + 32, 1)
+        assert data["temperature_f"] == expected_f
+
+    def test_resolved_location_in_response(self) -> None:
+        """The resolved city name from the geocoder must appear in 'location'."""
+        mock_urlopen = _make_urlopen_mock([_FAKE_GEO_RESPONSE, _FAKE_WEATHER_RESPONSE])
+        with patch("servers.base_tools.server.urllib.request.urlopen", mock_urlopen):
+            data = json.loads(get_weather("Seattle"))
+        assert "Seattle" in data["location"]
+
+    def test_wmo_code_resolved_to_condition_string(self) -> None:
+        """WMO code 3 must resolve to 'Overcast'."""
+        mock_urlopen = _make_urlopen_mock([_FAKE_GEO_RESPONSE, _FAKE_WEATHER_RESPONSE])
+        with patch("servers.base_tools.server.urllib.request.urlopen", mock_urlopen):
+            data = json.loads(get_weather("Seattle"))
+        assert data["condition"] == "Overcast"
+
+    def test_unknown_location_returns_error(self) -> None:
+        """When geocoding returns no results, an error dict must be returned."""
+        mock_urlopen = _make_urlopen_mock([_FAKE_EMPTY_GEO_RESPONSE])
+        with patch("servers.base_tools.server.urllib.request.urlopen", mock_urlopen):
+            data = json.loads(get_weather("ZZZNowhere123"))
+        assert "error" in data
+        assert "not found" in data["error"].lower()
+
+    def test_network_error_returns_error_json(self) -> None:
+        """Any network exception must return a JSON error dict, not raise."""
+        with patch(
+            "servers.base_tools.server.urllib.request.urlopen",
+            side_effect=OSError("Network unreachable"),
+        ):
+            data = json.loads(get_weather("Seattle"))
+        assert "error" in data
+        assert "Network unreachable" in data["error"]
+
+    def test_source_field_credits_open_meteo(self) -> None:
+        """The 'source' field must reference Open-Meteo."""
+        mock_urlopen = _make_urlopen_mock([_FAKE_GEO_RESPONSE, _FAKE_WEATHER_RESPONSE])
+        with patch("servers.base_tools.server.urllib.request.urlopen", mock_urlopen):
+            data = json.loads(get_weather("Seattle"))
+        assert "open-meteo" in data["source"].lower()
