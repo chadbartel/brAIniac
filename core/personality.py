@@ -60,11 +60,17 @@ class PersonalityManager:
         )
         persona_prompt = " ".join(traits)
 
-        # Mandatory Guardrail for Tool Calling
+        # Concise tool-use guardrail.
+        # Detailed routing is handled by the pre-screener — tool results are
+        # injected into context before you respond.  Your job is synthesis.
         tool_guardrail = (
-            "\n\nIMPORTANT: When executing tool calls, you must strictly adhere to the required "
-            "JSON schema. Do not let your personality influence, alter, or inject text into "
-            "the tool-call formatting or arguments."
+            "\n\nYou have tools available: get_current_time, get_weather, and web_search. "
+            "Tool results may already be present in the conversation — use them to answer. "
+            "If no result is present and the question requires current or live information, "
+            "call the appropriate tool. "
+            "Never answer questions about current events, hardware, software versions, prices, "
+            "or news from your training memory alone — it is out of date. "
+            "When executing a tool call, strictly adhere to the required JSON schema."
         )
 
         return base_prompt + persona_prompt + tool_guardrail
