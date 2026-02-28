@@ -72,6 +72,11 @@ Copy or create a `.env` file in the project root:
 OLLAMA_HOST=http://localhost:11434
 OLLAMA_MODEL=llama3.1:8b-instruct-q4_K_M
 MAX_CONTEXT_MESSAGES=20
+
+# Personality vectors — floats between 0.0 and 1.0 (defaults shown)
+PERSONALITY_SNARK=0.0
+PERSONALITY_VERBOSITY=0.5
+PERSONALITY_EMPATHY=0.5
 ```
 
 ### 3. Pull the model
@@ -121,6 +126,67 @@ Compose starts three services in order:
 3. `brainiac-web` — the Gradio web UI (waits for `ollama-pull` to complete)
 
 To change the model, set `OLLAMA_MODEL` in your `.env` before bringing the stack up.
+
+## Configuring Personality
+
+brAIniac's tone is driven by three continuous vectors, each a float between `0.0` and `1.0`. Set them in your `.env` file (or export them as shell variables) before starting the app — no code changes required.
+
+| Variable | Range | Effect |
+| --- | --- | --- |
+| `PERSONALITY_SNARK` | `0.0` – `1.0` | `< 0.5` → earnest and professional · `0.5–0.79` → dry wit · `≥ 0.8` → cynical and sarcastic |
+| `PERSONALITY_VERBOSITY` | `0.0` – `1.0` | `≤ 0.3` → brutally concise · `0.3–0.79` → balanced · `≥ 0.8` → exhaustive and detailed |
+| `PERSONALITY_EMPATHY` | `0.0` – `1.0` | `≤ 0.3` → cold and robotic · `0.3–0.79` → neutral · `≥ 0.8` → warm and emotionally supportive |
+
+### Example presets
+
+#### Default (balanced assistant)
+
+```env
+PERSONALITY_SNARK=0.0
+PERSONALITY_VERBOSITY=0.5
+PERSONALITY_EMPATHY=0.5
+```
+
+#### Terse engineer
+
+```env
+PERSONALITY_SNARK=0.3
+PERSONALITY_VERBOSITY=0.2
+PERSONALITY_EMPATHY=0.2
+```
+
+#### Snarky assistant
+
+```env
+PERSONALITY_SNARK=0.9
+PERSONALITY_VERBOSITY=0.5
+PERSONALITY_EMPATHY=0.3
+```
+
+#### Supportive companion
+
+```env
+PERSONALITY_SNARK=0.0
+PERSONALITY_VERBOSITY=0.7
+PERSONALITY_EMPATHY=0.9
+```
+
+The active vector values are logged at startup so you can confirm which persona loaded:
+
+```text
+ChatEngine initialized: model=... personality=snark=0.9/verbosity=0.5/empathy=0.3
+```
+
+To override at runtime without editing `.env`, pass a `PersonalityVectors` instance directly to `ChatEngine`:
+
+```python
+from core.chat import ChatEngine
+from core.personality import PersonalityVectors
+
+engine = ChatEngine(
+    personality_vectors=PersonalityVectors(snark=0.9, verbosity=0.5, empathy=0.3)
+)
+```
 
 ## VRAM Budget
 
