@@ -11,6 +11,10 @@ research loop:
   4. Repeat up to ``RESEARCH_MAX_ITERATIONS`` (default 3).
   5. Synthesise all collected chunks into one cited answer via Ollama.
 
+When SearXNG is unreachable (e.g. running outside Docker), each iteration
+automatically falls back to DuckDuckGo so the tool degrades gracefully
+instead of returning an empty result.
+
 All LLM calls go directly through ``ollama.Client`` so this server stays
 isolated from ``core/`` and does not import any cross-server logic.
 
@@ -34,6 +38,7 @@ import urllib.request
 from typing import Any
 
 # Third-Party Libraries
+from ddgs import DDGS
 from ollama import Client
 from fastmcp import FastMCP
 
@@ -120,6 +125,31 @@ def _search_searxng(query: str, top_n: int, searxng_host: str) -> list[dict[str,
             }
         )
     return results
+
+
+def _search_ddg(query: str, top_n: int) -> list[dict[str, str]]:
+    """Fallback search via DuckDuckGo when SearXNG is unavailable.
+
+    Args:
+        query: Search terms.
+        top_n: Maximum number of results to return.
+
+    Returns:
+        List of result dicts with keys ``url``, ``title``, ``snippet``.
+
+    Raises:
+        Exception: Propagates any DDGS error to the caller.
+    """
+    with DDGS() as ddgs:
+        hits = ddgs.text(query, max_results=top_n)
+    return [
+        {
+            "url": str(r.get("href", "")),
+            "title": str(r.get("title", "")),
+            "snippet": str(r.get("body", "")),
+        }
+        for r in hits
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -265,10 +295,23 @@ def _deep_research(query: str) -> str:
         try:
             results = _search_searxng(current_query, top_n, searxng_host)
         except (urllib.error.URLError, ValueError) as exc:
-            logger.error(
-                "[research] SearXNG failed on iteration %d: %s", iteration, exc
+            logger.warning(
+                "[research] SearXNG failed on iteration %d: %s — trying DDG fallback.",
+                iteration,
+                exc,
             )
-            break
+            try:
+                results = _search_ddg(current_query, top_n)
+                logger.debug(
+                    "[research] DDG fallback succeeded on iteration %d.", iteration
+                )
+            except Exception as ddg_exc:
+                logger.error(
+                    "[research] DDG fallback also failed on iteration %d: %s",
+                    iteration,
+                    ddg_exc,
+                )
+                break
 
         # Deduplicate by URL
         new_results = [r for r in results if r["url"] not in seen_urls]
@@ -297,8 +340,10 @@ def _deep_research(query: str) -> str:
     if not all_results:
         return json.dumps(
             {
-                "answer": "No results could be retrieved from SearXNG. "
-                "Ensure the SearXNG service is running.",
+                "answer": (
+                    "No results could be retrieved. SearXNG is unreachable and the "
+                    "DDG fallback also failed. Check your network connection."
+                ),
                 "citations": [],
                 "iterations": 0,
             },

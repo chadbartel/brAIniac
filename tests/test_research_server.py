@@ -267,21 +267,71 @@ class TestDeepResearch:
         urls = [c["url"] for c in data["citations"]]
         assert urls.count("https://example.com/a") == 1
 
-    def test_searxng_failure_returns_error_answer(
+    def test_searxng_failure_falls_back_to_ddg(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When SearXNG is unreachable for all iterations, answer explains the issue."""
-        monkeypatch.setenv("RESEARCH_MAX_ITERATIONS", "2")
+        """When SearXNG is unreachable, each iteration falls back to DDG."""
+        monkeypatch.setenv("RESEARCH_MAX_ITERATIONS", "1")
         monkeypatch.setenv("SEARXNG_HOST", "http://localhost:8080")
 
-        with patch(
-            "urllib.request.urlopen",
-            side_effect=urllib.error.URLError("connection refused"),
+        ddg_hits = [
+            {
+                "href": "https://example.com/ddg1",
+                "title": "DDG Result",
+                "body": "DDG snippet.",
+            },
+        ]
+        mock_ddgs_cls = MagicMock()
+        mock_ddgs_ctx = MagicMock()
+        mock_ddgs_ctx.text.return_value = ddg_hits
+        mock_ddgs_cls.return_value.__enter__.return_value = mock_ddgs_ctx
+        mock_ddgs_cls.return_value.__exit__.return_value = False
+
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=urllib.error.URLError("connection refused"),
+            ),
+            patch("servers.research_server.server.DDGS", mock_ddgs_cls),
+            patch("servers.research_server.server.Client") as mock_client_cls,
+        ):
+            mock_client = MagicMock()
+            mock_client.chat.return_value = _mock_ollama_chat_response(
+                "Latest Samsung Galaxy is the S25 Series [1]."
+            )
+            mock_client_cls.return_value = mock_client
+
+            result = _deep_research("latest Samsung Galaxy model")
+
+        data = json.loads(result)
+        assert data["answer"] != ""
+        assert len(data["citations"]) == 1
+        assert data["citations"][0]["url"] == "https://example.com/ddg1"
+
+    def test_both_backends_fail_returns_error_answer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When both SearXNG and DDG fail, the answer describes the failure."""
+        monkeypatch.setenv("RESEARCH_MAX_ITERATIONS", "1")
+        monkeypatch.setenv("SEARXNG_HOST", "http://localhost:8080")
+
+        mock_ddgs_cls = MagicMock()
+        mock_ddgs_ctx = MagicMock()
+        mock_ddgs_ctx.text.side_effect = RuntimeError("DDG also down")
+        mock_ddgs_cls.return_value.__enter__.return_value = mock_ddgs_ctx
+        mock_ddgs_cls.return_value.__exit__.return_value = False
+
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=urllib.error.URLError("connection refused"),
+            ),
+            patch("servers.research_server.server.DDGS", mock_ddgs_cls),
         ):
             result = _deep_research("anything")
 
         data = json.loads(result)
-        assert "SearXNG" in data["answer"]
+        assert "DDG" in data["answer"]
         assert data["citations"] == []
         assert data["iterations"] == 0
 
