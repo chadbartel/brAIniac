@@ -36,6 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
+from datetime import date
 
 # Third-Party Libraries
 from ddgs import DDGS
@@ -127,12 +128,19 @@ def _search_searxng(query: str, top_n: int, searxng_host: str) -> list[dict[str,
     return results
 
 
-def _search_ddg(query: str, top_n: int) -> list[dict[str, str]]:
+def _search_ddg(
+    query: str,
+    top_n: int,
+    timelimit: str | None = "y",
+) -> list[dict[str, str]]:
     """Fallback search via DuckDuckGo when SearXNG is unavailable.
 
     Args:
         query: Search terms.
         top_n: Maximum number of results to return.
+        timelimit: DDG time filter — ``"d"`` (day), ``"w"`` (week),
+            ``"m"`` (month), ``"y"`` (year), or ``None`` (no filter).
+            Defaults to ``"y"`` so research queries surface recent results.
 
     Returns:
         List of result dicts with keys ``url``, ``title``, ``snippet``.
@@ -141,7 +149,7 @@ def _search_ddg(query: str, top_n: int) -> list[dict[str, str]]:
         Exception: Propagates any DDGS error to the caller.
     """
     with DDGS() as ddgs:
-        hits = ddgs.text(query, max_results=top_n)
+        hits = ddgs.text(query, max_results=top_n, timelimit=timelimit)
     return [
         {
             "url": str(r.get("href", "")),
@@ -193,11 +201,17 @@ def _refine_query(
         A more focused query string (or the original if the LLM's response
         cannot be parsed cleanly).
     """
+    today_str = date.today().strftime("%B %d, %Y")
     prompt = (
-        f"You are a research assistant. The user wants to know: {original_query!r}\n\n"
-        f"Based on this evidence:\n{context_block}\n\n"
+        f"You are a research assistant. Today's date is {today_str}.\n"
+        f"The user wants to know: {original_query!r}\n\n"
+        f"Based on this evidence (which may reference outdated information):\n{context_block}\n\n"
         "Generate ONE concise search query (max 10 words) that would retrieve "
-        "the most important missing information. Return only the query, no explanation."
+        "the most CURRENT and up-to-date information available as of today. "
+        "IMPORTANT: Do NOT copy years, model numbers, or version numbers from the "
+        "evidence above into your query — the evidence may be stale. "
+        "Focus on finding what is newest and most recent right now. "
+        "Return only the query string, no explanation."
     )
     try:
         resp = ollama_client.chat(
@@ -232,15 +246,20 @@ def _synthesise(
     Returns:
         A human-readable answer with inline citation URLs.
     """
+    today_str = date.today().strftime("%B %d, %Y")
     sources_block = "\n".join(
         f"[{i+1}] {r['title']} — {r['url']}\n    {r['snippet']}"
         for i, r in enumerate(all_results)
     )
     prompt = (
-        f"You are a research analyst. Answer this question: {original_query!r}\n\n"
-        f"Use ONLY the sources below. Cite sources inline using their [N] number.\n\n"
+        f"You are a research analyst. Today's date is {today_str}.\n"
+        f"Answer this question: {original_query!r}\n\n"
+        f"Use ONLY the sources below. Cite sources inline using their [N] number. "
+        f"Prioritise the most recently dated information in the sources.\n\n"
         f"{sources_block}\n\n"
-        "Write a clear, factual answer in 3-6 sentences with inline citations."
+        "Write a clear, factual answer in 3-6 sentences with inline citations. "
+        "If the sources mention multiple generations of a product, always report "
+        "the NEWEST/LATEST one as the current answer."
     )
     try:
         resp = ollama_client.chat(
@@ -301,7 +320,7 @@ def _deep_research(query: str) -> str:
                 exc,
             )
             try:
-                results = _search_ddg(current_query, top_n)
+                results = _search_ddg(current_query, top_n, timelimit="y")
                 logger.debug(
                     "[research] DDG fallback succeeded on iteration %d.", iteration
                 )

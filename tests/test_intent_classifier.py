@@ -52,7 +52,7 @@ class TestLoadPipeline:
 
     def test_lazy_load_on_first_call(self) -> None:
         """Pipeline is instantiated on the first call to _load_pipeline()."""
-        mock_pipe = _make_pipeline_mock("requires recent information", 0.9)
+        mock_pipe = _make_pipeline_mock(cls_module._LABELS[0], 0.9)
         with patch("transformers.pipeline", return_value=mock_pipe) as mock_factory:
             result = cls_module._load_pipeline()
         mock_factory.assert_called_once_with(
@@ -64,7 +64,7 @@ class TestLoadPipeline:
 
     def test_pipeline_cached_after_first_load(self) -> None:
         """Subsequent calls return the cached instance without re-loading."""
-        mock_pipe = _make_pipeline_mock("requires recent information", 0.9)
+        mock_pipe = _make_pipeline_mock(cls_module._LABELS[0], 0.9)
         with patch("transformers.pipeline", return_value=mock_pipe) as mock_factory:
             first = cls_module._load_pipeline()
             second = cls_module._load_pipeline()
@@ -103,15 +103,15 @@ class TestNeedsCurrentInformation:
 
     def test_temporal_query_above_threshold_returns_true(self) -> None:
         """A temporal query with score above threshold returns True."""
-        self._patch_pipeline("requires recent information", 0.90)
+        self._patch_pipeline(cls_module._LABELS[0], 0.90)
         assert (
             cls_module.needs_current_information("What is the latest iPhone model?")
             is True
         )
 
     def test_temporal_query_exactly_at_threshold_returns_true(self) -> None:
-        """Score exactly equal to the default threshold (0.55) returns True."""
-        self._patch_pipeline("requires recent information", 0.55)
+        """Score exactly equal to the default threshold (0.45) returns True."""
+        self._patch_pipeline(cls_module._LABELS[0], 0.45)
         assert (
             cls_module.needs_current_information("current stock price of NVDA") is True
         )
@@ -120,14 +120,14 @@ class TestNeedsCurrentInformation:
 
     def test_non_temporal_query_returns_false(self) -> None:
         """A timeless factual query returns False."""
-        self._patch_pipeline("does not require recent information", 0.88)
+        self._patch_pipeline(cls_module._LABELS[1], 0.88)
         assert (
             cls_module.needs_current_information("What is the speed of light?") is False
         )
 
     def test_temporal_query_below_threshold_returns_false(self) -> None:
-        """A temporal label that scores below threshold is treated as False."""
-        self._patch_pipeline("requires recent information", 0.40)
+        """A temporal label that scores below the default threshold (0.45) is treated as False."""
+        self._patch_pipeline(cls_module._LABELS[0], 0.35)
         assert cls_module.needs_current_information("maybe something recent?") is False
 
     # -- threshold configuration ----------------------------------------------
@@ -135,10 +135,10 @@ class TestNeedsCurrentInformation:
     def test_custom_threshold_via_env_var(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """INTENT_CONFIDENCE_THRESHOLD env var overrides the default 0.55."""
+        """INTENT_CONFIDENCE_THRESHOLD env var overrides the default 0.45."""
         monkeypatch.setenv("INTENT_CONFIDENCE_THRESHOLD", "0.80")
-        # Score of 0.75 is above 0.55 but below 0.80 — should be False
-        self._patch_pipeline("requires recent information", 0.75)
+        # Score of 0.75 is above 0.45 but below 0.80 — should be False
+        self._patch_pipeline(cls_module._LABELS[0], 0.75)
         assert cls_module.needs_current_information("news today") is False
 
     def test_zero_threshold_always_returns_true_for_temporal_label(
@@ -146,22 +146,21 @@ class TestNeedsCurrentInformation:
     ) -> None:
         """Setting threshold to 0 makes any temporal-label win return True."""
         monkeypatch.setenv("INTENT_CONFIDENCE_THRESHOLD", "0.0")
-        self._patch_pipeline("requires recent information", 0.01)
+        self._patch_pipeline(cls_module._LABELS[0], 0.01)
         assert cls_module.needs_current_information("anything") is True
 
     # -- pipeline called with the correct candidate labels --------------------
 
     def test_correct_labels_passed_to_pipeline(self) -> None:
-        """The pipeline must receive the two canonical candidate labels."""
-        mock_pipe = self._patch_pipeline("requires recent information", 0.9)
+        """The pipeline must receive the canonical candidate labels and hypothesis template."""
+        mock_pipe = self._patch_pipeline(cls_module._LABELS[0], 0.9)
         cls_module.needs_current_information("latest GPU releases")
         mock_pipe.assert_called_once()
         _, kwargs = mock_pipe.call_args
         assert "candidate_labels" in kwargs
-        assert kwargs["candidate_labels"] == [
-            "requires recent information",
-            "does not require recent information",
-        ]
+        assert kwargs["candidate_labels"] == cls_module._LABELS
+        assert "hypothesis_template" in kwargs
+        assert kwargs["hypothesis_template"] == cls_module._HYPOTHESIS_TEMPLATE
 
     # -- fault tolerance ------------------------------------------------------
 
@@ -182,7 +181,7 @@ class TestNeedsCurrentInformation:
 
     def test_pipeline_loaded_once_across_multiple_calls(self) -> None:
         """_load_pipeline is effectively called only once for many invocations."""
-        mock_pipe = _make_pipeline_mock("requires recent information", 0.9)
+        mock_pipe = _make_pipeline_mock(cls_module._LABELS[0], 0.9)
         with patch("transformers.pipeline", return_value=mock_pipe) as mock_factory:
             # Reset cache to force the lazy load path
             cls_module._pipeline = None

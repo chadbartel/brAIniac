@@ -28,10 +28,20 @@ logger = logging.getLogger(__name__)
 _pipeline: Any | None = None
 
 # Candidate labels fed to the NLI model.
+# Phrased to complete the hypothesis template naturally:
+#   "This question requires [label] to answer accurately."
+# More concrete labels (especially mentioning current/recent events and
+# product releases) produce better calibration from the MNLI model than
+# the generic "requires recent information" phrasing.
 _LABELS: list[str] = [
-    "requires recent information",
-    "does not require recent information",
+    "current or recent information from the internet, such as news, product releases, software versions, or prices",
+    "only general knowledge or logical reasoning without any live data",
 ]
+
+# Hypothesis template for the NLI pipeline.
+# The pipeline substitutes each label into {}, creating:
+#   "This question requires <label> to answer accurately."
+_HYPOTHESIS_TEMPLATE: str = "This question requires {} to answer accurately."
 
 
 def _load_pipeline() -> Any:
@@ -98,24 +108,26 @@ def needs_current_information(query: str) -> bool:
         ``True`` if the first-ranked label is ``"requires recent information"``
         with score ≥ threshold; ``False`` otherwise.
     """
-    threshold = float(os.getenv("INTENT_CONFIDENCE_THRESHOLD", "0.55"))
+    threshold = float(os.getenv("INTENT_CONFIDENCE_THRESHOLD", "0.45"))
 
     try:
         pipe = _load_pipeline()
-        result: dict[str, Any] = pipe(query, candidate_labels=_LABELS)
+        result: dict[str, Any] = pipe(
+            query,
+            candidate_labels=_LABELS,
+            hypothesis_template=_HYPOTHESIS_TEMPLATE,
+        )
         top_label: str = result["labels"][0]
         top_score: float = result["scores"][0]
 
         is_research = top_label == _LABELS[0] and top_score >= threshold
 
-        logger.debug(
-            "Intent classification: query=%r, label=%r, score=%.3f, threshold=%.2f, "
-            "research_needed=%s",
+        logger.info(
+            "Intent classification: query=%r → research_needed=%s (score=%.3f, threshold=%.2f)",
             query[:80],
-            top_label,
+            is_research,
             top_score,
             threshold,
-            is_research,
         )
         return is_research
 
