@@ -15,12 +15,11 @@ from unittest.mock import MagicMock, patch
 # Third-Party Libraries
 import pytest
 
+# Local Modules
 # Local Modules — unwrap FastMCP's FunctionTool to get the plain Python callables
-from servers.base_tools.server import (
-    get_current_time as _get_current_time_tool,
-    get_weather as _get_weather_tool,
-    web_search as _web_search_tool,
-)
+from servers.base_tools.server import web_search as _web_search_tool
+from servers.base_tools.server import get_weather as _get_weather_tool
+from servers.base_tools.server import get_current_time as _get_current_time_tool
 
 # FunctionTool wraps the original function at `.fn`; import those for direct testing.
 get_current_time = _get_current_time_tool.fn
@@ -210,27 +209,31 @@ class TestWebSearch:
 # ---------------------------------------------------------------------------
 
 # Reusable fake API payloads
-_FAKE_GEO_RESPONSE = json.dumps({
-    "results": [
-        {
-            "name": "Seattle",
-            "latitude": 47.6062,
-            "longitude": -122.3321,
-            "country": "United States",
-        }
-    ]
-}).encode()
-
-_FAKE_WEATHER_RESPONSE = json.dumps({
-    "current": {
-        "temperature_2m": 12.5,
-        "apparent_temperature": 10.0,
-        "relative_humidity_2m": 78,
-        "wind_speed_10m": 14.4,
-        "weather_code": 3,
-        "precipitation": 0.0,
+_FAKE_GEO_RESPONSE = json.dumps(
+    {
+        "results": [
+            {
+                "name": "Seattle",
+                "latitude": 47.6062,
+                "longitude": -122.3321,
+                "country": "United States",
+            }
+        ]
     }
-}).encode()
+).encode()
+
+_FAKE_WEATHER_RESPONSE = json.dumps(
+    {
+        "current": {
+            "temperature_2m": 12.5,
+            "apparent_temperature": 10.0,
+            "relative_humidity_2m": 78,
+            "wind_speed_10m": 14.4,
+            "weather_code": 3,
+            "precipitation": 0.0,
+        }
+    }
+).encode()
 
 _FAKE_EMPTY_GEO_RESPONSE = json.dumps({"results": []}).encode()
 
@@ -274,9 +277,16 @@ class TestGetWeather:
         with patch("servers.base_tools.server.urllib.request.urlopen", mock_urlopen):
             data = json.loads(get_weather("Seattle"))
         for field in (
-            "location", "condition", "temperature_c", "temperature_f",
-            "feels_like_c", "feels_like_f", "humidity_pct",
-            "wind_speed_kmh", "precipitation_mm", "source",
+            "location",
+            "condition",
+            "temperature_c",
+            "temperature_f",
+            "feels_like_c",
+            "feels_like_f",
+            "humidity_pct",
+            "wind_speed_kmh",
+            "precipitation_mm",
+            "source",
         ):
             assert field in data, f"Missing field: {field}"
 

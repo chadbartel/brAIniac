@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # Standard Library
 import os
 from dataclasses import dataclass
@@ -64,10 +66,12 @@ class PersonalityManager:
         # Detailed routing is handled by the pre-screener — tool results are
         # injected into context before you respond.  Your job is synthesis.
         tool_guardrail = (
-            "\n\nYou have tools available: get_current_time, get_weather, and web_search. "
+            "\n\nYou have tools available: get_current_time, get_weather, web_search, "
+            "and deep_research. "
             "Tool results may already be present in the conversation — use them to answer. "
             "If no result is present and the question requires current or live information, "
-            "call the appropriate tool. "
+            "call the appropriate tool. Use deep_research for complex questions that benefit "
+            "from synthesising multiple web sources with citations. "
             "Never answer questions about current events, hardware, software versions, prices, "
             "or news from your training memory alone — it is out of date. "
             "When executing a tool call, strictly adhere to the required JSON schema."

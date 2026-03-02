@@ -71,15 +71,18 @@ services:
     container_name: brainiac-app
     restart: unless-stopped
     
-    # Connect to Ollama service — values come from the project-root .env.
+    # Connect to Ollama and SearXNG — values come from the project-root .env.
     environment:
       - OLLAMA_HOST=http://ollama:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b-instruct-q4_K_M}
+      - SEARXNG_HOST=http://searxng:8080
 
-    # Wait for the model pull to finish before starting the app.
+    # Wait for the model pull and SearXNG before starting the app.
     depends_on:
       ollama-pull:
         condition: service_completed_successfully
+      searxng:
+        condition: service_healthy
     
     # Interactive mode for CLI
     stdin_open: true
@@ -108,6 +111,7 @@ services:
       - OLLAMA_HOST=http://ollama:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b-instruct-q4_K_M}
       - MAX_CONTEXT_MESSAGES=${MAX_CONTEXT_MESSAGES:-20}
+      - SEARXNG_HOST=http://searxng:8080
 
     ports:
       - "80:7860"
@@ -115,6 +119,8 @@ services:
     depends_on:
       ollama-pull:
         condition: service_completed_successfully
+      searxng:
+        condition: service_healthy
 
     networks:
       - brainiac-net
@@ -135,6 +141,31 @@ services:
       - ../core:/app/core
       - ../servers:/app/servers
       - ../web.py:/app/web.py
+
+  # SearXNG — local web-search engine used by research_server and web_search tool
+  searxng:
+    image: searxng/searxng:latest
+    container_name: brainiac-searxng
+    restart: unless-stopped
+
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+
+    ports:
+      - "8080:8080"
+
+    networks:
+      - brainiac-net
+
+    # Healthcheck: stdlib socket probe — no curl/wget in the image.
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import socket; s=socket.create_connection(('localhost',8080),timeout=3); s.close()\""
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   ollama-models:
