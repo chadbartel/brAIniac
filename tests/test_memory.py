@@ -1,16 +1,18 @@
 """tests/test_memory.py
 
-Unit tests for the RollingMemory class (core/memory.py).
-Tests rolling context window, FIFO behavior, and system message preservation.
+Unit tests for the RollingMemory and DiskMemory classes (core/memory.py).
 """
 
 from __future__ import annotations
+
+# Standard Library
+from pathlib import Path
 
 # Third-Party Libraries
 import pytest
 
 # Local Modules
-from core.memory import RollingMemory
+from core.memory import DiskMemory, RollingMemory
 
 
 class TestRollingMemory:
@@ -192,3 +194,152 @@ class TestRollingMemory:
             memory.add_message("user", f"Message {i}")
 
         assert memory.message_count() == expected_count
+
+
+# ---------------------------------------------------------------------------
+# DiskMemory tests
+# ---------------------------------------------------------------------------
+
+
+class TestDiskMemory:
+    """Test suite for the Phase 2 DiskMemory backend."""
+
+    # ------------------------------------------------------------------
+    # Basic interface compliance (mirrors TestRollingMemory tests)
+    # ------------------------------------------------------------------
+
+    def test_initialization_creates_file(self, tmp_path: Path) -> None:
+        """DiskMemory creates the parent directory and JSONL file on first write."""
+        p = tmp_path / "sub" / "mem.jsonl"
+        mem = DiskMemory(max_messages=10, persist_path=p)
+        mem.add_message("user", "hello")
+        assert p.exists()
+
+    def test_set_system_message(self, tmp_path: Path) -> None:
+        """System message is stored and returned at the head of context."""
+        p = tmp_path / "mem.jsonl"
+        mem = DiskMemory(persist_path=p)
+        mem.set_system_message("You are a test bot.")
+        ctx = mem.get_context()
+        assert len(ctx) == 1
+        assert ctx[0]["role"] == "system"
+        assert ctx[0]["content"] == "You are a test bot."
+
+    def test_add_message_and_count(self, tmp_path: Path) -> None:
+        """message_count reflects the total number of non-system messages."""
+        p = tmp_path / "mem.jsonl"
+        mem = DiskMemory(persist_path=p)
+        mem.add_message("user", "ping")
+        mem.add_message("assistant", "pong")
+        assert mem.message_count() == 2
+
+    def test_get_context_includes_system_and_messages(self, tmp_path: Path) -> None:
+        """get_context returns system message first, then conversation messages."""
+        p = tmp_path / "mem.jsonl"
+        mem = DiskMemory(persist_path=p)
+        mem.set_system_message("sys")
+        mem.add_message("user", "hello")
+        mem.add_message("assistant", "hi")
+        ctx = mem.get_context()
+        assert ctx[0]["role"] == "system"
+        assert ctx[1]["role"] == "user"
+        assert ctx[2]["role"] == "assistant"
+
+    def test_clear_removes_messages_preserves_system(self, tmp_path: Path) -> None:
+        """clear() wipes messages but keeps the system prompt."""
+        p = tmp_path / "mem.jsonl"
+        mem = DiskMemory(persist_path=p)
+        mem.set_system_message("sys")
+        mem.add_message("user", "Message 1")
+        mem.add_message("assistant", "Response 1")
+        mem.clear()
+        assert mem.message_count() == 0
+        ctx = mem.get_context()
+        assert len(ctx) == 1
+        assert ctx[0]["role"] == "system"
+
+    # ------------------------------------------------------------------
+    # FIFO context window with full history
+    # ------------------------------------------------------------------
+
+    def test_context_window_is_bounded(self, tmp_path: Path) -> None:
+        """get_context() returns at most max_messages entries (FIFO)."""
+        p = tmp_path / "mem.jsonl"
+        mem = DiskMemory(max_messages=3, persist_path=p)
+        for i in range(7):
+            mem.add_message("user", f"Message {i}")
+        ctx = mem.get_context()
+        # Only last 3 messages in context
+        assert len(ctx) == 3
+        # But full history is stored
+        assert mem.message_count() == 7
+
+    def test_context_fifo_order(self, tmp_path: Path) -> None:
+        """get_context() returns the most recent messages when windowed."""
+        p = tmp_path / "mem.jsonl"
+        mem = DiskMemory(max_messages=2, persist_path=p)
+        for i in range(5):
+            mem.add_message("user", f"Message {i}")
+        ctx = mem.get_context()
+        assert ctx[0]["content"] == "Message 3"
+        assert ctx[1]["content"] == "Message 4"
+
+    def test_message_count_returns_full_history_not_window(
+        self, tmp_path: Path
+    ) -> None:
+        """message_count() is the total stored count, not the windowed slice."""
+        p = tmp_path / "mem.jsonl"
+        mem = DiskMemory(max_messages=2, persist_path=p)
+        for i in range(6):
+            mem.add_message("user", f"msg {i}")
+        assert mem.message_count() == 6
+
+    # ------------------------------------------------------------------
+    # Persistence across re-instantiation
+    # ------------------------------------------------------------------
+
+    def test_persistence_across_restart(self, tmp_path: Path) -> None:
+        """Messages written in one instance are available in a new instance."""
+        p = tmp_path / "mem.jsonl"
+
+        mem1 = DiskMemory(persist_path=p)
+        mem1.set_system_message("persisted sys")
+        mem1.add_message("user", "first session msg")
+
+        # Simulate restart
+        mem2 = DiskMemory(persist_path=p)
+        assert mem2.message_count() == 1
+        ctx = mem2.get_context()
+        assert ctx[0]["role"] == "system"
+        assert ctx[0]["content"] == "persisted sys"
+        assert ctx[1]["content"] == "first session msg"
+
+    def test_multiple_restarts_accumulate_messages(self, tmp_path: Path) -> None:
+        """Each instantiation appends; total count grows correctly."""
+        p = tmp_path / "mem.jsonl"
+
+        for i in range(3):
+            m = DiskMemory(persist_path=p)
+            m.add_message("user", f"session {i}")
+
+        final = DiskMemory(persist_path=p)
+        assert final.message_count() == 3
+
+    # ------------------------------------------------------------------
+    # Clear persists to disk
+    # ------------------------------------------------------------------
+
+    def test_clear_reflected_on_disk(self, tmp_path: Path) -> None:
+        """After clear(), a new instance sees zero messages."""
+        p = tmp_path / "mem.jsonl"
+        mem1 = DiskMemory(persist_path=p)
+        mem1.set_system_message("sys")
+        mem1.add_message("user", "should be erased")
+        mem1.clear()
+
+        mem2 = DiskMemory(persist_path=p)
+        assert mem2.message_count() == 0
+        ctx = mem2.get_context()
+        # System message survives the clear
+        assert len(ctx) == 1
+        assert ctx[0]["role"] == "system"

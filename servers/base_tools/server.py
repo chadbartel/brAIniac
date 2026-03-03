@@ -7,8 +7,10 @@ Exposes time, real DDG web search, and Open-Meteo weather via MCP protocol.
 from __future__ import annotations
 
 # Standard Library
+import os
 import json
 import logging
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -98,22 +100,85 @@ def web_search(query: str, max_results: int = 5) -> str:
 
 
 def _web_search(query: str, max_results: int = 5) -> str:
-    """Implementation: run a DuckDuckGo search and return JSON results."""
+    """Implementation: try SearXNG first, then fall back to DuckDuckGo."""
+    # ------------------------------------------------------------------
+    # Primary path: SearXNG
+    # ------------------------------------------------------------------
+    searxng_host = os.getenv("SEARXNG_HOST", "http://localhost:8080").rstrip("/")
     try:
-        with DDGS() as ddgs:
-            hits = [
-                {"title": r["title"], "url": r["href"], "snippet": r["body"]}
-                for r in ddgs.text(query, max_results=max_results)
-            ]
+        hits = _search_searxng_base(
+            query=query, top_n=max_results, searxng_host=searxng_host
+        )
+        logger.debug("[web_search] Using SearXNG backend")
         result: dict[str, Any] = {
             "query": query,
             "results_count": len(hits),
             "results": hits,
         }
         return json.dumps(result, indent=2, ensure_ascii=False)
+    except (urllib.error.URLError, OSError, ValueError) as searxng_exc:
+        logger.debug(
+            "[web_search] SearXNG unavailable (%s) — falling back to DDG.", searxng_exc
+        )
+
+    # ------------------------------------------------------------------
+    # Fallback: DuckDuckGo
+    # ------------------------------------------------------------------
+    try:
+        with DDGS() as ddgs:
+            hits_ddg = [
+                {"title": r["title"], "url": r["href"], "snippet": r["body"]}
+                for r in ddgs.text(query, max_results=max_results)
+            ]
+        logger.debug("[web_search] Using DDG backend")
+        result = {
+            "query": query,
+            "results_count": len(hits_ddg),
+            "results": hits_ddg,
+        }
+        return json.dumps(result, indent=2, ensure_ascii=False)
     except Exception as exc:
         logger.error("[web_search] DDG failure: %s", exc, exc_info=True)
         return json.dumps({"error": str(exc)})
+
+
+def _search_searxng_base(
+    query: str, top_n: int, searxng_host: str
+) -> list[dict[str, str]]:
+    """Query a local SearXNG instance and return structured results.
+
+    Args:
+        query: Search terms.
+        top_n: Maximum number of results to return.
+        searxng_host: Base URL of the SearXNG service.
+
+    Returns:
+        List of result dicts with keys ``url``, ``title``, ``snippet``.
+
+    Raises:
+        urllib.error.URLError: If the SearXNG service is unreachable.
+        ValueError: If the response is non-200 or contains an error key.
+    """
+    params = urllib.parse.urlencode(
+        {"q": query, "format": "json", "categories": "general"}
+    )
+    url = f"{searxng_host}/search?{params}"
+    with urllib.request.urlopen(url, timeout=5) as resp:
+        if resp.status != 200:
+            raise ValueError(f"SearXNG returned HTTP {resp.status}")
+        data: dict[str, Any] = json.loads(resp.read())
+    if "error" in data:
+        raise ValueError(f"SearXNG error response: {data['error']}")
+    results: list[dict[str, str]] = []
+    for item in data.get("results", [])[:top_n]:
+        results.append(
+            {
+                "url": str(item.get("url", "")),
+                "title": str(item.get("title", "")),
+                "snippet": str(item.get("content", item.get("snippet", ""))),
+            }
+        )
+    return results
 
 
 @mcp.tool()

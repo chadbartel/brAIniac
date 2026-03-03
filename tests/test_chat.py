@@ -7,10 +7,12 @@ Tests chat loop, Ollama integration (mocked), and tool execution.
 from __future__ import annotations
 
 # Standard Library
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 # Local Modules
 from core.chat import ChatEngine
+from core.memory import DiskMemory, RollingMemory
 
 
 class TestChatEngine:
@@ -86,7 +88,9 @@ class TestChatEngine:
 
         engine.register_tools(tools)
 
-        assert len(engine.tools) == 3  # 2 passed + get_weather registered at init
+        assert (
+            len(engine.tools) == 4
+        )  # 2 passed + get_weather + deep_research registered at init
         assert "get_current_time" in engine.tools
         assert "web_search" in engine.tools
 
@@ -113,11 +117,15 @@ class TestChatEngine:
         # Standard Library
         import json
 
-        fake_result = json.dumps({
-            "query": "Python testing",
-            "results_count": 1,
-            "results": [{"title": "Result", "url": "https://real.com", "snippet": "snippet"}],
-        })
+        fake_result = json.dumps(
+            {
+                "query": "Python testing",
+                "results_count": 1,
+                "results": [
+                    {"title": "Result", "url": "https://real.com", "snippet": "snippet"}
+                ],
+            }
+        )
 
         with patch("servers.base_tools.server._web_search", return_value=fake_result):
             result = engine.execute_tool("web_search", {"query": "Python testing"})
@@ -286,3 +294,79 @@ class TestChatEngine:
         context = engine.memory.get_context()
         # System message + 4 rolling messages = 5 total
         assert len(context) == 5
+
+    # -----------------------------------------------------------------------
+    # Phase 2: memory_backend="disk"
+    # -----------------------------------------------------------------------
+
+    @patch("core.chat.Client")
+    def test_memory_backend_disk(self, mock_client_class: Mock, tmp_path: Path) -> None:
+        """ChatEngine uses DiskMemory when memory_backend='disk'."""
+        p = tmp_path / "mem.jsonl"
+        engine = ChatEngine(memory_backend="disk", persist_path=p)
+        assert isinstance(engine.memory, DiskMemory)
+        # System message must still be set
+        ctx = engine.memory.get_context()
+        assert len(ctx) == 1
+        assert ctx[0]["role"] == "system"
+
+    @patch("core.chat.Client")
+    def test_memory_backend_rolling_is_default(self, mock_client_class: Mock) -> None:
+        """Default memory_backend keeps RollingMemory (no regression)."""
+        engine = ChatEngine()
+        assert isinstance(engine.memory, RollingMemory)
+
+    # -----------------------------------------------------------------------
+    # Phase 2: intent classifier gates research tools
+    # -----------------------------------------------------------------------
+
+    @patch("core.chat.Client")
+    @patch("core.chat.needs_current_information", return_value=False)
+    def test_intent_gates_tools_quiet_turn(
+        self,
+        mock_intent: Mock,
+        mock_client_class: Mock,
+        mock_ollama_client: Mock,
+    ) -> None:
+        """When classifier returns False, deep_research is NOT in turn schemas."""
+        mock_client_class.return_value = mock_ollama_client
+        engine = ChatEngine()
+
+        engine.chat("What is the capital of France?")
+
+        call_args = mock_ollama_client.chat.call_args
+        tools_passed = call_args.kwargs.get("tools") or []
+        tool_names = [t["function"]["name"] for t in tools_passed]
+        assert "deep_research" not in tool_names
+        # Base tools should still be present
+        assert "get_current_time" in tool_names
+        assert "web_search" in tool_names
+
+    @patch("core.chat.Client")
+    @patch("core.chat.needs_current_information", return_value=True)
+    def test_intent_gates_tools_research_turn(
+        self,
+        mock_intent: Mock,
+        mock_client_class: Mock,
+        mock_ollama_client: Mock,
+    ) -> None:
+        """When classifier returns True, deep_research IS in turn schemas."""
+        mock_client_class.return_value = mock_ollama_client
+        engine = ChatEngine()
+
+        engine.chat("What has NVIDIA released in the last 3 months?")
+
+        call_args = mock_ollama_client.chat.call_args
+        tools_passed = call_args.kwargs.get("tools") or []
+        tool_names = [t["function"]["name"] for t in tools_passed]
+        assert "deep_research" in tool_names
+
+    @patch("core.chat.Client")
+    def test_deep_research_registered_in_tool_schemas(
+        self, mock_client_class: Mock
+    ) -> None:
+        """deep_research schema must be present in engine.tools after init."""
+        engine = ChatEngine()
+        assert "deep_research" in engine.tools
+        schema = engine.tools["deep_research"]
+        assert schema["function"]["name"] == "deep_research"

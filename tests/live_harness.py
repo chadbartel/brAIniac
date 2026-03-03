@@ -7,7 +7,7 @@ Gradio chat UI with streaming responses, model switching, and diagnostics.
 Configuration is loaded from the project-root ``.env`` file via
 ``python-dotenv``.  Recognised environment variables:
 
-- ``OLLAMA_BASE_URL``   — Ollama host (default: ``http://localhost:11434``)
+- ``OLLAMA_HOST``       — Ollama host (default: ``http://localhost:11434``)
 - ``OLLAMA_MODEL``      — Model name  (default: ``llama3.1:8b-instruct-q4_K_M``)
 - ``HARNESS_PORT``      — Gradio port (default: ``7861``)
 

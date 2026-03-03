@@ -1,0 +1,38 @@
+# docker/searxng/settings.yml
+#
+# Minimal SearXNG configuration for brAIniac local deployment.
+# Enables JSON output format and disables rate-limiting so the
+# research_server and base_tools web_search can query freely.
+
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "brAIniac-SearXNG"
+
+server:
+  # Must be set to a non-empty secret for SearXNG to accept requests.
+  secret_key: "brainiac-searxng-local-secret-change-in-production"
+  limiter: false
+  public_instance: false
+  bind_address: "0.0.0.0"
+  port: 8080
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+
+# Enable JSON output format so urllib.request can consume raw results.
+result_proxy:
+  url: ""
+  key: ""
+
+outgoing:
+  request_timeout: 10.0
+  useragent_suffix: "brAIniac-research"
+
+# Ensure the JSON format is allowed
+formats:
+  - html
+  - json

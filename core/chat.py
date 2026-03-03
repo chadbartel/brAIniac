@@ -7,17 +7,19 @@ Handles user input, LLM interaction, tool calling, and response generation.
 from __future__ import annotations
 
 # Standard Library
+import os
 import json
 import logging
-import os
-from typing import Any
+from typing import Any, Literal, Callable
+from pathlib import Path
 
 # Third-Party Libraries
 from ollama import Client
 
 # Local Modules
-from core.memory import RollingMemory
+from core.memory import BaseMemory, DiskMemory, RollingMemory
 from core.personality import PersonalityManager, PersonalityVectors
+from core.intent_classifier import needs_current_information
 
 # Configure logging
 logging.basicConfig(
@@ -40,36 +42,54 @@ class ChatEngine:
         ollama_host: str | None = None,
         max_context_messages: int = 20,
         personality_vectors: PersonalityVectors | None = None,
+        memory_backend: Literal["rolling", "disk"] = "rolling",
+        persist_path: Path | None = None,
     ) -> None:
         """Initialize the chat engine.
 
         Args:
             model: Ollama model name. Falls back to the OLLAMA_MODEL env var,
                 then "llama3.1:8b-instruct-q4_K_M".
-            ollama_host: Ollama API endpoint. Falls back to the OLLAMA_BASE_URL
+            ollama_host: Ollama API endpoint. Falls back to the OLLAMA_HOST
                 env var, then "http://localhost:11434".
             max_context_messages: Maximum messages in rolling context window.
             personality_vectors: Pre-built PersonalityVectors instance. When
                 omitted, vectors are loaded from env vars via
                 ``PersonalityVectors.from_env()``.
+            memory_backend: Which memory implementation to use.
+                ``"rolling"`` (default) keeps all existing behaviour;
+                ``"disk"`` activates the Phase 2 JSONL-backed DiskMemory.
+            persist_path: Custom path for the DiskMemory JSONL file.
+                Forwarded verbatim to DiskMemory; ignored for rolling backend.
         """
         self.model = model or os.getenv("OLLAMA_MODEL", "llama3.1:8b-instruct-q4_K_M")
-        self.ollama_host = ollama_host or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.memory = RollingMemory(max_messages=max_context_messages)
+        self.ollama_host = ollama_host or os.getenv(
+            "OLLAMA_HOST", "http://localhost:11434"
+        )
+
+        self.memory: BaseMemory
+        if memory_backend == "disk":
+            self.memory = DiskMemory(
+                max_messages=max_context_messages, persist_path=persist_path
+            )
+        else:
+            self.memory = RollingMemory(max_messages=max_context_messages)
 
         # Initialize Ollama client
         self.client = Client(host=self.ollama_host)
 
-        # Tool registry (will be populated by FastMCP server discovery)
+        # Tool registry + dispatch table
         self.tools: dict[str, Any] = {}
+        self._tool_dispatch: dict[str, Callable[[dict[str, Any]], str]] = {}
 
         # Initialize PersonalityManager and inject the dynamic system prompt
         vectors = personality_vectors or PersonalityVectors.from_env()
         self.personality_manager = PersonalityManager(vectors)
         self._set_default_system_message()
 
-        # Register built-in Phase 1 tool schemas
+        # Register built-in tool schemas and wire up the dispatch table
         self._register_default_tools()
+        self._build_tool_dispatch()
 
         logger.info(
             "ChatEngine initialized: model=%s, host=%s, max_messages=%d, "
@@ -87,8 +107,50 @@ class ChatEngine:
         system_prompt = self.personality_manager.generate_system_prompt()
         self.memory.set_system_message(system_prompt)
 
+    def _build_tool_dispatch(self) -> None:
+        """Build the tool-name → executor mapping.
+
+        Using a dict registry instead of an if/elif chain makes it trivial
+        to extend the dispatch table (add one entry) without touching the
+        ``execute_tool`` method body.
+        """
+
+        def _exec_get_current_time(args: dict[str, Any]) -> str:
+            # Local Modules
+            from servers.base_tools.server import _get_current_time
+
+            return _get_current_time()
+
+        def _exec_web_search(args: dict[str, Any]) -> str:
+            # Local Modules
+            from servers.base_tools.server import _web_search
+
+            return _web_search(
+                query=args.get("query", ""),
+                max_results=int(args.get("max_results", 5)),
+            )
+
+        def _exec_get_weather(args: dict[str, Any]) -> str:
+            # Local Modules
+            from servers.base_tools.server import _get_weather
+
+            return _get_weather(location=args.get("location", ""))
+
+        def _exec_deep_research(args: dict[str, Any]) -> str:
+            # Local Modules
+            from servers.research_server.server import _deep_research
+
+            return _deep_research(query=args.get("query", ""))
+
+        self._tool_dispatch = {
+            "get_current_time": _exec_get_current_time,
+            "web_search": _exec_web_search,
+            "get_weather": _exec_get_weather,
+            "deep_research": _exec_deep_research,
+        }
+
     def _register_default_tools(self) -> None:
-        """Register the built-in Phase 1 tool schemas with the engine."""
+        """Register the built-in tool schemas (Phase 1 + Phase 2) with the engine."""
         self.register_tools(
             [
                 {
@@ -148,6 +210,29 @@ class ChatEngine:
                         },
                     },
                 },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "deep_research",
+                        "description": (
+                            "Perform iterative deep research on a topic by querying multiple "
+                            "web sources, refining sub-queries, and synthesising a cited answer. "
+                            "Use this for complex questions that require up-to-date information "
+                            "from multiple sources, such as recent product releases, news events, "
+                            "or comparative analyses."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "required": ["query"],
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "The research question or topic to investigate.",
+                                },
+                            },
+                        },
+                    },
+                },
             ]
         )
 
@@ -166,8 +251,8 @@ class ChatEngine:
     def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
         """Execute a tool call and return the result.
 
-        In Phase 1, this is a mock implementation. In later phases,
-        this will route to the actual FastMCP server.
+        Dispatches via ``_tool_dispatch`` dict — extend that table to add
+        new tools without modifying this method.
 
         Args:
             tool_name: Name of the tool to execute.
@@ -178,25 +263,11 @@ class ChatEngine:
         """
         logger.info("Tool call requested: %s with args %s", tool_name, arguments)
 
-        # Route to the real FastMCP tool implementations in servers/base_tools.
-        # TODO: Replace with a proper FastMCP client in Phase 2.
-        if tool_name == "get_current_time":
-            from servers.base_tools.server import _get_current_time
-            return _get_current_time()
+        executor = self._tool_dispatch.get(tool_name)
+        if executor is not None:
+            return executor(arguments)
 
-        elif tool_name == "web_search":
-            from servers.base_tools.server import _web_search
-            query = arguments.get("query", "")
-            max_results = int(arguments.get("max_results", 5))
-            return _web_search(query=query, max_results=max_results)
-
-        elif tool_name == "get_weather":
-            from servers.base_tools.server import _get_weather
-            location = arguments.get("location", "")
-            return _get_weather(location=location)
-
-        else:
-            return json.dumps({"error": f"Unknown tool: {tool_name}"})
+        return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
     def chat(self, user_message: str) -> str:
         """Process a user message and generate a response.
@@ -218,10 +289,31 @@ class ChatEngine:
 
         logger.debug("Sending %d messages to LLM", len(context))
 
+        # --- Intent gating ---------------------------------------------------
+        # Run the DistilBERT zero-shot classifier to decide whether research
+        # tools should be offered to the LLM on this turn.  Base tools
+        # (time, weather, web_search) are always included.  deep_research is
+        # only appended when the classifier flags a temporal information need.
+        research_needed: bool = needs_current_information(user_message)
+        _research_tool_names: frozenset[str] = frozenset({"deep_research"})
+        turn_schemas: list[dict[str, Any]] = [
+            schema
+            for name, schema in self.tools.items()
+            if name not in _research_tool_names or research_needed
+        ]
+        tool_schemas: list[dict[str, Any]] | None = (
+            turn_schemas if turn_schemas else None
+        )
+
+        logger.debug(
+            "Turn tool schemas: %s (research_needed=%s)",
+            [s["function"]["name"] for s in (tool_schemas or [])],
+            research_needed,
+        )
+
         # Tool-call exchanges are kept in a local buffer for this turn only.
         # They are not persisted to rolling memory to avoid context bloat.
         turn_messages: list[dict[str, Any]] = list(context)
-        tool_schemas = list(self.tools.values()) if self.tools else None
 
         try:
             response = self.client.chat(

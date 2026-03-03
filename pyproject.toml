@@ -18,6 +18,8 @@ python-dotenv = "^1.0.1"
 rich = "^13.9.4"
 ddgs = "^9.10.0"
 gradio = "^6.6.0"
+torch = "^2.5.0"
+transformers = "^4.44.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"
